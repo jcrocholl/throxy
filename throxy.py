@@ -116,16 +116,6 @@ class Message:
         self.headers_complete = False
         self.complete = False
 
-    def extract_header(self, name, default=None):
-        name = name.lower()
-        for line in self.headers:
-            if not line.count(':'):
-                continue
-            key, value = line.split(':', 1)
-            if key.lower() == name:
-                return value.strip()
-        return default
-
     def append(self, new_data):
         self.data += new_data
         while not self.headers_complete:
@@ -143,7 +133,9 @@ class Message:
                     self.extract_header('Content-Length', 0))
             self.data = self.data[newline+2:]
         if self.headers_complete:
-            self.complete = len(self.data) >= self.content_length
+            if len(self.data) >= self.content_length:
+                self.complete = True
+                self.extract_host()
             if len(self.data) > self.content_length:
                 rest = self.data[self.content_length:]
                 self.data = self.data[:self.content_length]
@@ -151,6 +143,62 @@ class Message:
                     rest = rest[1:]
                 return rest
         return ''
+
+    def extract_header(self, name, default=None):
+        name = name.lower()
+        for line in self.headers:
+            if not line.count(':'):
+                continue
+            key, value = line.split(':', 1)
+            if key.lower() == name:
+                return value.strip()
+        return default
+
+    def extract_host(self):
+        self.host = self.extract_header('Host')
+        if self.host is None:
+            return
+        # print "client %s:%d wants to talk to" % self.client.addr, self.host
+        if self.host.count(':'):
+            self.host_name, self.host_port = self.host.split(':')
+        else:
+            self.host_name = self.host
+            self.host_port = 80
+        self.host_ip = socket.gethostbyname(self.host_name)
+        self.host_addr = (self.host_ip, self.host_port)
+
+    def extract_path(self):
+        match = request_match(self.headers[0])
+        if not match:
+            raise ValueError("malformed request line " + self.headers[0])
+        self.method, self.url, self.proto = match.groups()
+        if self.method.upper() == 'CONNECT':
+            raise ValueError("method CONNECT is not supported")
+        prefix = 'http://' + self.host
+        if not self.url.startswith(prefix):
+            raise ValueError("URL doesn't start with " + prefix)
+        self.path = self.url[len(prefix):]
+
+    def dump_title(from_addr, to_addr, direction='sending', what='data'):
+        print '=== %s %s from %s:%d to %s:%d ===' % (
+            direction, what,
+            from_addr[0], from_addr[1],
+            to_addr[0], to_addr[1])
+
+    def dump_headers(from_addr, to_addr, direction='sending'):
+        dump_title(from_addr, to_addr, direction, 'headers')
+        print '\n'.join(self.headers)
+
+    def dump_data(from_addr, to_addr, direction='sending'):
+        dump_title(from_addr, to_addr, direction, 'data')
+        print repr(self.data)
+
+    def dump(self, from_addr, to_addr, direction='sending'):
+        if options.dump_send_headers:
+            self.message.dump_headers(from_addr, to_addr)
+        if options.dump_send_data:
+            self.message.dump_data(from_addr, to_addr)
+
 
 class ClientChannel(asyncore.dispatcher):
 
@@ -177,8 +225,10 @@ class ClientChannel(asyncore.dispatcher):
         while len(data):
             rest = self.message.append(data)
             if self.message.complete:
-                print '\n'.join(self.message.headers)
-                print repr(self.message.data)
+                if not hasattr(self.message, 'host_addr'):
+                    raise ValueError("could not find Host header")
+                self.message.dump(self.addr, self.message.host_addr)
+                # ServerChannel(self, self.message)
                 self.message = Message()
             data = rest
 
@@ -206,7 +256,7 @@ class ClientChannel(asyncore.dispatcher):
 
 class ServerChannel(asyncore.dispatcher):
 
-    def __init__(self, client, request):
+    def __init__(self, client, message):
         asyncore.dispatcher.__init__(self)
         self.client = client
         self.extract_host(request)
@@ -215,31 +265,6 @@ class ServerChannel(asyncore.dispatcher):
         self.connect(self.addr)
         self.buffer = []
         self.send_request(request)
-
-    def extract_host(self, request):
-        self.host = extract_header(request, 'Host')
-        if not self.host:
-            raise ValueError("host header missing")
-        # print "client %s:%d wants to talk to" % self.client.addr, self.host
-        if self.host.count(':'):
-            self.host_name, self.host_port = self.host.split(':')
-        else:
-            self.host_name = self.host
-            self.host_port = 80
-        self.host_ip = socket.gethostbyname(self.host_name)
-        self.addr = (self.host_ip, self.host_port)
-
-    def extract_path(self, request):
-        match = request_match(request[0])
-        if not match:
-            raise ValueError("invalid request " + request[0])
-        self.method, self.url, self.proto = match.groups()
-        if self.method.upper() == 'CONNECT':
-            raise ValueError("method CONNECT is not supported")
-        prefix = 'http://' + self.host
-        if not self.url.startswith(prefix):
-            raise ValueError("URL doesn't start with " + prefix)
-        self.path = self.url[len(prefix):]
 
     def send_request(self, request):
         if options.dump_send_headers:
