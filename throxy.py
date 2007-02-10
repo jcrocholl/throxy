@@ -261,17 +261,17 @@ class ServerChannel(asyncore.dispatcher):
 
     def __init__(self, client, message):
         asyncore.dispatcher.__init__(self)
+        self.buffer = []
         self.client = client
         self.addr = message.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
-        self.buffer = []
         self.send_message(message)
 
     def send_message(self, message):
         message.extract_request()
         self.send_line(' '.join(
-            (self.message.method, self.message.path, self.message.proto)))
+            (message.method, message.path, message.proto)))
         self.send_line('Connection: close')
         for line in message.headers[1:]:
             if not (line.startswith('Keep-Alive: ') or
