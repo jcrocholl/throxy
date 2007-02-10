@@ -44,6 +44,15 @@ MIN_PACKET_SIZE = 512 # bytes
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
+def extract_header(headers, name, default=None):
+    name = name.lower()
+    for line in headers:
+        key, value = line.split(':', 1)
+        if key.lower() == name:
+            return value.strip()
+    return default
+
+
 class BandwidthMonitor:
 
     def __init__(self,
@@ -104,21 +113,17 @@ class BandwidthMonitor:
 
 class ProxyServer(asyncore.dispatcher):
 
-    def __init__(self, interface, port, monitor, allow_remote=False):
+    def __init__(self):
         asyncore.dispatcher.__init__(self)
-        self.interface = interface
-        self.port = port
-        self.monitor = monitor
-        self.allow_remote = allow_remote
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.bind((interface, port))
+        self.bind((options.interface, options.port))
         self.listen(5)
-        print "listening on port", port
+        print "listening on port", options.port
 
     def handle_accept(self):
         channel, addr = self.accept()
-        if addr[0] == '127.0.0.1' or self.allow_remote:
-            ClientChannel(channel, addr, self.monitor)
+        if addr[0] == '127.0.0.1' or options.allow_remote:
+            ClientChannel(channel, addr)
         else:
             channel.close()
             print "remote client %s:%d not allowed" % addr
@@ -126,11 +131,10 @@ class ProxyServer(asyncore.dispatcher):
 
 class ClientChannel(asyncore.dispatcher):
 
-    def __init__(self, channel, addr, monitor):
+    def __init__(self, channel, addr):
         asyncore.dispatcher.__init__(self, channel)
         self.addr = addr
-        self.monitor = monitor
-        self.incomplete_input = ''
+        self.input = ''
         self.content_length = 0
         self.request = []
         self.buffer = []
@@ -138,63 +142,70 @@ class ClientChannel(asyncore.dispatcher):
 
     def writable(self):
         return len(self.buffer) and \
-               self.monitor.sendable() / 2 > MIN_PACKET_SIZE
+               monitor.sendable() / 2 > MIN_PACKET_SIZE
 
     def handle_write(self):
-        max_bytes = self.monitor.sendable() / 2
+        max_bytes = monitor.sendable() / 2
         if max_bytes < MIN_PACKET_SIZE:
             return
         # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
-        self.monitor.log_sent_bytes(bytes)
+        monitor.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
             self.buffer.pop(0)
         else:
             self.buffer[0] = self.buffer[0][bytes:]
 
     def readable(self):
-        return self.monitor.receivable() / 2 > MIN_PACKET_SIZE
+        return monitor.receivable() / 2 > MIN_PACKET_SIZE
 
     def handle_read(self):
-        max_bytes = self.monitor.receivable() / 2
+        max_bytes = max(8192, monitor.receivable() / 2)
         if max_bytes < MIN_PACKET_SIZE:
             return
         # print "receivable", max_bytes
         data = self.recv(max_bytes)
         if not len(data):
             return
-        self.monitor.log_received_bytes(len(data))
+        monitor.log_received_bytes(len(data))
+        self.input += data
+        self.handle_input()
+
+    def handle_input(self):
         if self.content_length:
-            # send POST data to the server
-            bytes = min(len(data), self.content_length)
-            self.server.buffer.append(data[:bytes])
-            print repr(data[:bytes])
-            self.content_length -= bytes
-            data = data[bytes:]
-            if data.startswith('\r\n'):
-                data = data[2:]
-        if len(data):
+            self.handle_content()
+        while len(self.input):
             # analyze request headers
-            lines = data.split('\n')
-            if len(lines) == 1:
-                self.incomplete_input += lines[0]
-            else:
-                self.handle_request_line(self.incomplete_input + lines[0])
-                for line in lines[1:-1]:
-                    self.handle_request_line(line)
-                self.incomplete_input = lines[-1]
+            newline = self.input.find('\r\n')
+            if newline < 0:
+                break # no complete line found
+            line = self.input[:newline]
+            self.input = self.input[newline+2:]
+            self.handle_request_line(line)
+            if self.content_length:
+                self.handle_content()
+
+    def handle_content(self):
+            # send POST data to the server
+            bytes = min(len(self.input), self.content_length)
+            self.server.buffer.append(self.input[:bytes])
+            print repr(self.input[:bytes])
+            self.content_length -= bytes
+            self.input = self.input[bytes:]
+            if self.input.startswith('\r\n'):
+                # ignore HTTP violation
+                self.input = self.input[2:]
 
     def handle_request_line(self, line):
         line = line.rstrip('\r')
         if line:
-            # print "client %s:%d said" % self.addr, repr(line)
             self.request.append(line)
         else:
-            # print '#####################################'
-            # print '\n'.join(self.request)
-            # print '#####################################'
+            if options.client_headers:
+                print '\n'.join(self.request)
+            self.content_length = int(extract_header(
+                self.request, 'Content-Length', 0))
             self.server = ServerChannel(self, self.request)
-            self.content_length = self.server.content_length
             self.request = []
 
     def handle_close(self):
@@ -209,19 +220,14 @@ class ServerChannel(asyncore.dispatcher):
         self.client = client
         self.extract_host(request)
         self.extract_path(request)
-        self.extract_content_length(request)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
         self.buffer = []
         self.send_request(request)
 
     def extract_host(self, request):
-        for line in request:
-            key, value = line.split(':', 1)
-            if key.lower() == 'host':
-                self.host = value.strip()
-                break
-        else:
+        self.host = extract_header(request, 'Host')
+        if not self.host:
             raise ValueError("host header missing")
         # print "client %s:%d wants to talk to" % self.client.addr, self.host
         if self.host.count(':'):
@@ -243,15 +249,6 @@ class ServerChannel(asyncore.dispatcher):
         if not self.url.startswith(prefix):
             raise ValueError("URL doesn't start with " + prefix)
         self.path = self.url[len(prefix):]
-
-    def extract_content_length(self, request):
-        for line in request:
-            key, value = line.split(':', 1)
-            if key.lower() == 'content-length':
-                self.content_length = int(value.strip())
-                break
-        else:
-            self.content_length = 0
 
     def send_request(self, request):
         print '#####################################'
@@ -301,7 +298,7 @@ class ServerChannel(asyncore.dispatcher):
         print "server %s:%d disconnected" % self.addr
 
 
-def _main():
+if __name__ == '__main__':
     from optparse import OptionParser
     version = '%prog ' + __revision__.strip('$').replace('Rev: ', 'r')
     parser = OptionParser(version=version)
@@ -309,7 +306,7 @@ def _main():
                       metavar='<ip>', default='',
                       help="listen on this interface only (default all)")
     parser.add_option('-p', dest='port', action='store', type='int',
-                      metavar='<number>', default=8080,
+                      metavar='<port>', default=8080,
                       help="listen on this port number (default 8080)")
     parser.add_option('-d', dest='download', action='store', type='float',
                       metavar='<kbps>', default=28.8,
@@ -317,22 +314,22 @@ def _main():
     parser.add_option('-u', dest='upload', action='store', type='float',
                       metavar='<kbps>', default=28.8,
                       help="upload bandwidth in kbps (default 28.8)")
-    parser.add_option('-R', dest='allow_remote',
-                      default=False, action='store_true',
+    parser.add_option('-R', dest='allow_remote', action='store_true',
                       help="allow remote clients (WARNING: open proxy)")
+    parser.add_option('-q', dest='quiet', action='store_true',
+                      help="don't show connect and disconnect messages")
+    parser.add_option('-c', dest='client_headers', action='store_true',
+                      help="show headers received from clients")
+    parser.add_option('-s', dest='server_headers', action='store_true',
+                      help="show headers sent to servers")
     options, args = parser.parse_args()
     monitor = BandwidthMonitor(
         int(options.upload * KILO) / 8,
         int(options.download * KILO) / 8)
-    proxy = ProxyServer(options.interface, options.port,
-                        monitor, options.allow_remote)
+    proxy = ProxyServer()
     try:
         asyncore.loop(timeout=0.1)
     except:
         proxy.shutdown(2)
         proxy.close()
         raise
-
-
-if __name__ == '__main__':
-    _main()
