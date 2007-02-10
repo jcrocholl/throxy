@@ -1,3 +1,4 @@
+#! /usr/bin/env python
 # throxy.py - HTTP proxy to simulate dial-up access
 # Copyright (C) 2007 Johann C. Rocholl <johann@rocholl.net>
 #
@@ -22,10 +23,14 @@
 # SOFTWARE.
 
 """
-Throxy = Throttling Proxy.
+Throxy (Throttling Proxy)
 
-This is a simple HTTP proxy, written in pure Python, that simulates a
-slow connection, as you would typically find on dial-up access.
+This is a simple HTTP proxy, with the following features:
+
+* Simulates a slow connection (like dial-up).
+* Optionally dumps HTTP headers and content for debugging.
+* Supports multiple connections, without threading.
+* Written in pure Python.
 
 To use it, run this script on your local machine and adjust your
 browser settings to use 127.0.0.1:8080 as HTTP proxy.
@@ -40,7 +45,7 @@ import re
 __revision__ = '$Rev$'
 
 KILO = 1000 # decimal or binary kilo
-MIN_PACKET_SIZE = 512 # bytes
+MIN_FRAGMENT_SIZE = 512 # bytes
 
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
@@ -127,8 +132,7 @@ class ProxyServer(asyncore.dispatcher):
             ClientChannel(channel, addr)
         else:
             channel.close()
-            if not options.quiet:
-                print >> sys.stderr, "remote client %s:%d not allowed" % addr
+            print >> sys.stderr, "remote client %s:%d not allowed" % addr
 
 
 class ClientChannel(asyncore.dispatcher):
@@ -145,26 +149,33 @@ class ClientChannel(asyncore.dispatcher):
 
     def writable(self):
         return len(self.buffer) and \
-               monitor.sendable() / 2 > MIN_PACKET_SIZE
+               monitor.sendable() / 2 > MIN_FRAGMENT_SIZE
 
     def handle_write(self):
         max_bytes = monitor.sendable() / 2
-        if max_bytes < MIN_PACKET_SIZE:
+        if max_bytes < MIN_FRAGMENT_SIZE:
             return
         # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
+        if options.dump_recv_data:
+            print "==== sending data to client %s:%d ====" % self.addr
+            print self.buffer[0][:bytes]
         monitor.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
             self.buffer.pop(0)
         else:
             self.buffer[0] = self.buffer[0][bytes:]
+        if (not len(self.buffer) and
+            hasattr(self, 'should_close') and
+            self.should_close):
+            self.close()
 
     def readable(self):
-        return monitor.receivable() / 2 > MIN_PACKET_SIZE
+        return monitor.receivable() / 2 > MIN_FRAGMENT_SIZE
 
     def handle_read(self):
         max_bytes = max(8192, monitor.receivable() / 2)
-        if max_bytes < MIN_PACKET_SIZE:
+        if max_bytes < MIN_FRAGMENT_SIZE:
             return
         # print "receivable", max_bytes
         data = self.recv(max_bytes)
@@ -194,7 +205,12 @@ class ClientChannel(asyncore.dispatcher):
             if not bytes:
                 return
             self.server.buffer.append(self.input[:bytes])
+            if options.dump_send_data:
+                print '==== sending data to server %s:%d ====' \
+                      % self.server.addr
+                print self.input[:bytes]
             self.content_length -= bytes
+            print 'content remaining', self.content_length, 'bytes'
             self.input = self.input[bytes:]
             if self.input.startswith('\r\n'):
                 # ignore HTTP violation
@@ -254,6 +270,8 @@ class ServerChannel(asyncore.dispatcher):
         self.path = self.url[len(prefix):]
 
     def send_request(self, request):
+        if options.dump_send_headers:
+             print '==== sending header to server %s:%d ====' % self.addr
         self.send_line(' '.join((self.method, self.path, self.proto)))
         self.send_line('Host: ' + self.host)
         self.send_line('Connection: close')
@@ -271,6 +289,8 @@ class ServerChannel(asyncore.dispatcher):
         self.send_line('')
 
     def send_line(self, line):
+        if options.dump_send_headers:
+            print line
         self.buffer.append(line + '\r\n')
 
     def writable(self):
@@ -295,6 +315,7 @@ class ServerChannel(asyncore.dispatcher):
             print >> sys.stderr, "server %s:%d connected" % self.addr
 
     def handle_close(self):
+        self.client.should_close = True
         self.close()
         if not options.quiet:
             print >> sys.stderr, "server %s:%d disconnected" % self.addr
