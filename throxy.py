@@ -144,8 +144,8 @@ class Message:
                 return value.strip()
         return default
 
-    def append(self, data):
-        self.data += data
+    def append(self, new_data):
+        self.data += new_data
         while not self.headers_complete:
             newline = self.data.find('\n')
             if newline < 0:
@@ -161,8 +161,14 @@ class Message:
                     self.extract_header('Content-Length', 0))
             self.data = self.data[newline+2:]
         if self.headers_complete:
-            self.complete = len(data) == self.content_length
-
+            self.complete = len(self.data) >= self.content_length
+            if len(self.data) > self.content_length:
+                rest = self.data[self.content_length:]
+                self.data = self.data[:self.content_length]
+                while len(rest) and rest[0] in '\r\n':
+                    rest = rest[1:]
+                return rest
+        return ''
 
 class ClientChannel(asyncore.dispatcher):
 
@@ -186,11 +192,13 @@ class ClientChannel(asyncore.dispatcher):
         if not len(data):
             return
         monitor.log_received_bytes(len(data))
-        self.message.append(data)
-        if self.message.headers_complete:
-            for line in self.message.headers:
-                print repr(line)
-            print repr(self.message.data)
+        while len(data):
+            rest = self.message.append(data)
+            if self.message.complete:
+                print '\n'.join(self.message.headers)
+                print repr(self.message.data)
+                self.message = Message()
+            data = rest
 
     def writable(self):
         return len(self.buffer) and \
