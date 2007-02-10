@@ -92,7 +92,7 @@ class ServerChannel(asyncore.dispatcher):
                 break
         else:
             raise ValueError("host header missing")
-        print "client %s:%d wants to talk to" % self.client.addr, self.host
+        # print "client %s:%d wants to talk to" % self.client.addr, self.host
         if self.host.count(':'):
             self.host_name, self.host_port = self.host.split(':')
         else:
@@ -115,9 +115,19 @@ class ServerChannel(asyncore.dispatcher):
         print '#####################################'
         self.send_line(' '.join((self.method, self.path, self.proto)))
         self.send_line('Host: ' + self.host)
+        self.send_line('Connection: close')
         for line in request[1:]:
-            if not line.startswith('Host: '):
+            if line.startswith('Host: '):
+                pass
+            elif line.startswith('Keep-Alive: '):
+                pass
+            elif line.startswith('Connection: '):
+                pass
+            elif line.startswith('Proxy-'):
+                pass
+            else:
                 self.send_line(line)
+        self.send_line('')
         print '#####################################'
 
     def send_line(self, line):
@@ -130,14 +140,16 @@ class ServerChannel(asyncore.dispatcher):
     def handle_write(self):
         sent = self.send(self.buffer[0])
         if sent == len(self.buffer[0]):
+            # print "sent", repr(self.buffer[0])
             self.buffer.pop(0)
         else:
+            # print "sent", repr(self.buffer[0][:sent])
             self.buffer[0] = self.buffer[0][sent:]
 
     def handle_read(self):
         data = self.recv(8192)
-        if data:
-            self.client.buffer.append(data)
+        # print "received", repr(data)
+        self.client.buffer.append(data)
 
     def handle_connect(self):
         print "server %s:%d connected" % self.addr
