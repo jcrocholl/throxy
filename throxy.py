@@ -50,15 +50,6 @@ MIN_FRAGMENT_SIZE = 512 # bytes
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
-def extract_header(headers, name, default=None):
-    name = name.lower()
-    for line in headers:
-        key, value = line.split(':', 1)
-        if key.lower() == name:
-            return value.strip()
-    return default
-
-
 class BandwidthMonitor:
 
     def __init__(self,
@@ -135,14 +126,47 @@ class ProxyServer(asyncore.dispatcher):
             print >> sys.stderr, "remote client %s:%d not allowed" % addr
 
 
+class Message:
+
+    def __init__(self):
+        self.headers = []
+        self.data = ''
+        self.headers_complete = False
+        self.complete = False
+
+    def extract_header(self, name, default=None):
+        name = name.lower()
+        for line in headers:
+            key, value = line.split(':', 1)
+            if key.lower() == name:
+                return value.strip()
+        return default
+        self.handle_input()
+
+    def append(self, data):
+        self.data += data
+        while not self.headers_complete:
+            newline = self.data.find('\r\n')
+            if newline < 0:
+                break # no complete line found
+            line = self.data[:newline]
+            if len(line):
+                self.headers.append(line)
+            else:
+                self.headers_complete = True
+                self.content_length = int(
+                    self.extract_header('Content-Length', 0))
+            self.data = self.data[newline+2:]
+        if self.headers_complete:
+            self.complete = len(data) == self.content_length
+
+
 class ClientChannel(asyncore.dispatcher):
 
     def __init__(self, channel, addr):
         asyncore.dispatcher.__init__(self, channel)
         self.addr = addr
-        self.input = ''
-        self.content_length = 0
-        self.request = []
+        self.message = Message()
         self.buffer = []
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
@@ -157,18 +181,11 @@ class ClientChannel(asyncore.dispatcher):
             return
         # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
-        if options.dump_recv_data:
-            print "==== sending data to client %s:%d ====" % self.addr
-            print self.buffer[0][:bytes]
         monitor.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
             self.buffer.pop(0)
         else:
             self.buffer[0] = self.buffer[0][bytes:]
-        if (not len(self.buffer) and
-            hasattr(self, 'should_close') and
-            self.should_close):
-            self.close()
 
     def readable(self):
         return monitor.receivable() / 2 > MIN_FRAGMENT_SIZE
@@ -182,49 +199,11 @@ class ClientChannel(asyncore.dispatcher):
         if not len(data):
             return
         monitor.log_received_bytes(len(data))
-        self.input += data
-        self.handle_input()
-
-    def handle_input(self):
-        if self.content_length:
-            self.handle_content()
-        while len(self.input):
-            # analyze request headers
-            newline = self.input.find('\r\n')
-            if newline < 0:
-                break # no complete line found
-            line = self.input[:newline]
-            self.input = self.input[newline+2:]
-            self.handle_request_line(line)
-            if self.content_length:
-                self.handle_content()
-
-    def handle_content(self):
-            # send POST data to the server
-            bytes = min(len(self.input), self.content_length)
-            if not bytes:
-                return
-            self.server.buffer.append(self.input[:bytes])
-            if options.dump_send_data:
-                print '==== sending data to server %s:%d ====' \
-                      % self.server.addr
-                print self.input[:bytes]
-            self.content_length -= bytes
-            print 'content remaining', self.content_length, 'bytes'
-            self.input = self.input[bytes:]
-            if self.input.startswith('\r\n'):
-                # ignore HTTP violation
-                self.input = self.input[2:]
-
-    def handle_request_line(self, line):
-        line = line.rstrip('\r')
-        if line:
-            self.request.append(line)
-        else:
-            self.content_length = int(extract_header(
-                self.request, 'Content-Length', 0))
-            self.server = ServerChannel(self, self.request)
-            self.request = []
+        self.message.append(data)
+        if self.message.complete:
+            for line in self.message.headers:
+                print repr(line)
+            print repr(self.message.data)
 
     def handle_close(self):
         self.close()
