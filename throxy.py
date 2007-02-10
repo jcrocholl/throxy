@@ -41,8 +41,7 @@ __revision__ = '$Rev$'
 KILO = 1000 # decimal or binary kilo
 MIN_PACKET_SIZE = 512 # bytes
 
-request_match = re.compile(r'^(GET) (\S+) (HTTP/\S+)$').match
-host_match = re.compile(r'^Host: (\S+)$').match
+request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
 class BandwidthMonitor:
@@ -132,6 +131,7 @@ class ClientChannel(asyncore.dispatcher):
         self.addr = addr
         self.monitor = monitor
         self.incomplete_input = ''
+        self.content_length = 0
         self.request = []
         self.buffer = []
         print "client %s:%d connected" % self.addr
@@ -144,7 +144,7 @@ class ClientChannel(asyncore.dispatcher):
         max_bytes = self.monitor.sendable() / 2
         if max_bytes < MIN_PACKET_SIZE:
             return
-        print "sendable", max_bytes
+        # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
         self.monitor.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
@@ -159,10 +159,22 @@ class ClientChannel(asyncore.dispatcher):
         max_bytes = self.monitor.receivable() / 2
         if max_bytes < MIN_PACKET_SIZE:
             return
-        print "receivable", max_bytes
+        # print "receivable", max_bytes
         data = self.recv(max_bytes)
+        if not len(data):
+            return
+        self.monitor.log_received_bytes(len(data))
+        if self.content_length:
+            # send POST data to the server
+            bytes = min(len(data), self.content_length)
+            self.server.buffer.append(data[:bytes])
+            print repr(data[:bytes])
+            self.content_length -= bytes
+            data = data[bytes:]
+            if data.startswith('\r\n'):
+                data = data[2:]
         if len(data):
-            self.monitor.log_received_bytes(len(data))
+            # analyze request headers
             lines = data.split('\n')
             if len(lines) == 1:
                 self.incomplete_input += lines[0]
@@ -181,7 +193,8 @@ class ClientChannel(asyncore.dispatcher):
             # print '#####################################'
             # print '\n'.join(self.request)
             # print '#####################################'
-            ServerChannel(self, self.request)
+            self.server = ServerChannel(self, self.request)
+            self.content_length = self.server.content_length
             self.request = []
 
     def handle_close(self):
@@ -196,6 +209,7 @@ class ServerChannel(asyncore.dispatcher):
         self.client = client
         self.extract_host(request)
         self.extract_path(request)
+        self.extract_content_length(request)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
         self.buffer = []
@@ -203,9 +217,9 @@ class ServerChannel(asyncore.dispatcher):
 
     def extract_host(self, request):
         for line in request:
-            match = host_match(line)
-            if match:
-                self.host = match.group(1)
+            key, value = line.split(':', 1)
+            if key.lower() == 'host':
+                self.host = value.strip()
                 break
         else:
             raise ValueError("host header missing")
@@ -223,13 +237,24 @@ class ServerChannel(asyncore.dispatcher):
         if not match:
             raise ValueError("invalid request " + request[0])
         self.method, self.url, self.proto = match.groups()
+        if self.method.upper() == 'CONNECT':
+            raise ValueError("method CONNECT is not supported")
         prefix = 'http://' + self.host
         if not self.url.startswith(prefix):
             raise ValueError("URL doesn't start with " + prefix)
         self.path = self.url[len(prefix):]
 
+    def extract_content_length(self, request):
+        for line in request:
+            key, value = line.split(':', 1)
+            if key.lower() == 'content-length':
+                self.content_length = int(value.strip())
+                break
+        else:
+            self.content_length = 0
+
     def send_request(self, request):
-        # print '#####################################'
+        print '#####################################'
         self.send_line(' '.join((self.method, self.path, self.proto)))
         self.send_line('Host: ' + self.host)
         self.send_line('Connection: close')
@@ -245,10 +270,10 @@ class ServerChannel(asyncore.dispatcher):
             else:
                 self.send_line(line)
         self.send_line('')
-        # print '#####################################'
+        print '#####################################'
 
     def send_line(self, line):
-        # print line
+        print line
         self.buffer.append(line + '\r\n')
 
     def writable(self):
