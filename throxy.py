@@ -31,6 +31,7 @@ To use it, run this script on your local machine and adjust your
 browser settings to use 127.0.0.1:8080 as HTTP proxy.
 """
 
+import sys
 import asyncore
 import socket
 import time
@@ -118,7 +119,7 @@ class ProxyServer(asyncore.dispatcher):
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.bind((options.interface, options.port))
         self.listen(5)
-        print "listening on port", options.port
+        print >> sys.stderr, "listening on port", options.port
 
     def handle_accept(self):
         channel, addr = self.accept()
@@ -126,7 +127,8 @@ class ProxyServer(asyncore.dispatcher):
             ClientChannel(channel, addr)
         else:
             channel.close()
-            print "remote client %s:%d not allowed" % addr
+            if not options.quiet:
+                print >> sys.stderr, "remote client %s:%d not allowed" % addr
 
 
 class ClientChannel(asyncore.dispatcher):
@@ -138,7 +140,8 @@ class ClientChannel(asyncore.dispatcher):
         self.content_length = 0
         self.request = []
         self.buffer = []
-        print "client %s:%d connected" % self.addr
+        if not options.quiet:
+            print >> sys.stderr, "client %s:%d connected" % self.addr
 
     def writable(self):
         return len(self.buffer) and \
@@ -188,8 +191,9 @@ class ClientChannel(asyncore.dispatcher):
     def handle_content(self):
             # send POST data to the server
             bytes = min(len(self.input), self.content_length)
+            if not bytes:
+                return
             self.server.buffer.append(self.input[:bytes])
-            print repr(self.input[:bytes])
             self.content_length -= bytes
             self.input = self.input[bytes:]
             if self.input.startswith('\r\n'):
@@ -201,8 +205,6 @@ class ClientChannel(asyncore.dispatcher):
         if line:
             self.request.append(line)
         else:
-            if options.client_headers:
-                print '\n'.join(self.request)
             self.content_length = int(extract_header(
                 self.request, 'Content-Length', 0))
             self.server = ServerChannel(self, self.request)
@@ -210,7 +212,8 @@ class ClientChannel(asyncore.dispatcher):
 
     def handle_close(self):
         self.close()
-        print "client %s:%d disconnected" % self.addr
+        if not options.quiet:
+            print >> sys.stderr, "client %s:%d disconnected" % self.addr
 
 
 class ServerChannel(asyncore.dispatcher):
@@ -251,7 +254,6 @@ class ServerChannel(asyncore.dispatcher):
         self.path = self.url[len(prefix):]
 
     def send_request(self, request):
-        print '#####################################'
         self.send_line(' '.join((self.method, self.path, self.proto)))
         self.send_line('Host: ' + self.host)
         self.send_line('Connection: close')
@@ -267,10 +269,8 @@ class ServerChannel(asyncore.dispatcher):
             else:
                 self.send_line(line)
         self.send_line('')
-        print '#####################################'
 
     def send_line(self, line):
-        print line
         self.buffer.append(line + '\r\n')
 
     def writable(self):
@@ -291,11 +291,13 @@ class ServerChannel(asyncore.dispatcher):
         self.client.buffer.append(data)
 
     def handle_connect(self):
-        print "server %s:%d connected" % self.addr
+        if not options.quiet:
+            print >> sys.stderr, "server %s:%d connected" % self.addr
 
     def handle_close(self):
         self.close()
-        print "server %s:%d disconnected" % self.addr
+        if not options.quiet:
+            print >> sys.stderr, "server %s:%d disconnected" % self.addr
 
 
 if __name__ == '__main__':
@@ -314,14 +316,18 @@ if __name__ == '__main__':
     parser.add_option('-u', dest='upload', action='store', type='float',
                       metavar='<kbps>', default=28.8,
                       help="upload bandwidth in kbps (default 28.8)")
-    parser.add_option('-R', dest='allow_remote', action='store_true',
+    parser.add_option('-o', dest='allow_remote', action='store_true',
                       help="allow remote clients (WARNING: open proxy)")
     parser.add_option('-q', dest='quiet', action='store_true',
                       help="don't show connect and disconnect messages")
-    parser.add_option('-c', dest='client_headers', action='store_true',
-                      help="show headers received from clients")
-    parser.add_option('-s', dest='server_headers', action='store_true',
-                      help="show headers sent to servers")
+    parser.add_option('-s', dest='dump_send_headers', action='store_true',
+                      help="dump headers sent to server")
+    parser.add_option('-r', dest='dump_recv_headers', action='store_true',
+                      help="dump headers received from server")
+    parser.add_option('-S', dest='dump_send_data', action='store_true',
+                      help="dump data sent to server")
+    parser.add_option('-R', dest='dump_recv_data', action='store_true',
+                      help="dump data received from server")
     options, args = parser.parse_args()
     monitor = BandwidthMonitor(
         int(options.upload * KILO) / 8,
