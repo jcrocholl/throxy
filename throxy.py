@@ -108,24 +108,6 @@ class BandwidthMonitor:
         return self.weighted_kbps(self.send_log)
 
 
-class ProxyServer(asyncore.dispatcher):
-
-    def __init__(self):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.bind((options.interface, options.port))
-        self.listen(5)
-        print >> sys.stderr, "listening on port", options.port
-
-    def handle_accept(self):
-        channel, addr = self.accept()
-        if addr[0] == '127.0.0.1' or options.allow_remote:
-            ClientChannel(channel, addr)
-        else:
-            channel.close()
-            print >> sys.stderr, "remote client %s:%d not allowed" % addr
-
-
 class Message:
 
     def __init__(self):
@@ -309,6 +291,24 @@ class ServerChannel(asyncore.dispatcher):
         self.close()
         if not options.quiet:
             print >> sys.stderr, "server %s:%d disconnected" % self.addr
+
+
+class ProxyServer(asyncore.dispatcher):
+
+    def __init__(self):
+        asyncore.dispatcher.__init__(self)
+        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.bind((options.interface, options.port))
+        self.listen(5)
+        print >> sys.stderr, "listening on port", options.port
+
+    def handle_accept(self):
+        channel, addr = self.accept()
+        if addr[0] == '127.0.0.1' or options.allow_remote:
+            ClientChannel(channel, addr)
+        else:
+            channel.close()
+            print >> sys.stderr, "remote client %s:%d not allowed" % addr
 
 
 if __name__ == '__main__':
