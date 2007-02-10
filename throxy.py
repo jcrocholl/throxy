@@ -133,7 +133,6 @@ class Message:
                 self.headers_complete = True
             self.data = self.data[newline+1:]
         if self.headers_complete:
-            self.extract_host()
             self.content_length = int(
                 self.extract_header('Content-Length', 0))
             if len(self.data) >= self.content_length:
@@ -169,7 +168,7 @@ class Message:
         self.host_ip = socket.gethostbyname(self.host_name)
         self.host_addr = (self.host_ip, self.host_port)
 
-    def extract_path(self):
+    def extract_request(self):
         match = request_match(self.headers[0])
         if not match:
             raise ValueError("malformed request line " + self.headers[0])
@@ -230,8 +229,9 @@ class ClientChannel(asyncore.dispatcher):
         while len(data):
             rest = self.message.append(data)
             if self.message.complete:
+                self.message.extract_host()
                 self.message.dump(self.addr, self.message.host_addr)
-                # ServerChannel(self, self.message)
+                ServerChannel(self, self.message)
                 self.message = Message()
             data = rest
 
@@ -262,35 +262,26 @@ class ServerChannel(asyncore.dispatcher):
     def __init__(self, client, message):
         asyncore.dispatcher.__init__(self)
         self.client = client
-        self.extract_host(request)
-        self.extract_path(request)
+        self.addr = message.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
         self.buffer = []
-        self.send_request(request)
+        self.send_message(message)
 
-    def send_request(self, request):
-        if options.dump_send_headers:
-             print '==== sending header to server %s:%d ====' % self.addr
-        self.send_line(' '.join((self.method, self.path, self.proto)))
-        self.send_line('Host: ' + self.host)
+    def send_message(self, message):
+        message.extract_request()
+        self.send_line(' '.join(
+            (self.message.method, self.message.path, self.message.proto)))
         self.send_line('Connection: close')
-        for line in request[1:]:
-            if line.startswith('Host: '):
-                pass
-            elif line.startswith('Keep-Alive: '):
-                pass
-            elif line.startswith('Connection: '):
-                pass
-            elif line.startswith('Proxy-'):
-                pass
-            else:
+        for line in message.headers[1:]:
+            if not (line.startswith('Keep-Alive: ') or
+                    line.startswith('Connection: ') or
+                    line.startswith('Proxy-')):
                 self.send_line(line)
         self.send_line('')
+        self.buffer.append(message.data)
 
     def send_line(self, line):
-        if options.dump_send_headers:
-            print line
         self.buffer.append(line + '\r\n')
 
     def writable(self):
@@ -299,15 +290,12 @@ class ServerChannel(asyncore.dispatcher):
     def handle_write(self):
         bytes = self.send(self.buffer[0])
         if bytes == len(self.buffer[0]):
-            # print "sent", repr(self.buffer[0])
             self.buffer.pop(0)
         else:
-            # print "sent", repr(self.buffer[0][:bytes])
             self.buffer[0] = self.buffer[0][bytes:]
 
     def handle_read(self):
         data = self.recv(8192)
-        # print "received", repr(data)
         self.client.buffer.append(data)
 
     def handle_connect(self):
