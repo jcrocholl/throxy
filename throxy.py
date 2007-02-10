@@ -136,14 +136,13 @@ class Message:
 
     def extract_header(self, name, default=None):
         name = name.lower()
-        for line in headers:
+        for line in self.headers:
             if not line.count(':'):
                 continue
             key, value = line.split(':', 1)
             if key.lower() == name:
                 return value.strip()
         return default
-        self.handle_input()
 
     def append(self, data):
         self.data += data
