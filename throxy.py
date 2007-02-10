@@ -131,13 +131,13 @@ class Message:
                 self.headers.append(line)
             else:
                 self.headers_complete = True
-                self.content_length = int(
-                    self.extract_header('Content-Length', 0))
-            self.data = self.data[newline+2:]
+            self.data = self.data[newline+1:]
         if self.headers_complete:
+            self.extract_host()
+            self.content_length = int(
+                self.extract_header('Content-Length', 0))
             if len(self.data) >= self.content_length:
                 self.complete = True
-                self.extract_host()
             if len(self.data) > self.content_length:
                 rest = self.data[self.content_length:]
                 self.data = self.data[:self.content_length]
