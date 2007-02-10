@@ -150,7 +150,7 @@ class Message:
             if newline < 0:
                 break # no complete line found
             line = self.data[:newline]
-            if line[-1] == '\r':
+            if len(line) and line[-1] == '\r':
                 line = line[:-1]
             if len(line):
                 self.headers.append(line)
