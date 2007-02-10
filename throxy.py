@@ -115,6 +115,8 @@ class Message:
         self.data = ''
         self.headers_complete = False
         self.complete = False
+        self.host = ''
+        self.host_addr = ('unknown', 80)
 
     def append(self, new_data):
         self.data += new_data
@@ -179,25 +181,28 @@ class Message:
             raise ValueError("URL doesn't start with " + prefix)
         self.path = self.url[len(prefix):]
 
-    def dump_title(from_addr, to_addr, direction='sending', what='data'):
-        print '=== %s %s from %s:%d to %s:%d ===' % (
+    def dump_title(self, from_addr, to_addr, direction='sending', what='data'):
+        print '==== %s %s (%s:%d => %s:%d) ====' % (
             direction, what,
             from_addr[0], from_addr[1],
             to_addr[0], to_addr[1])
 
-    def dump_headers(from_addr, to_addr, direction='sending'):
-        dump_title(from_addr, to_addr, direction, 'headers')
+    def dump_headers(self, from_addr, to_addr, direction='sending'):
+        self.dump_title(from_addr, to_addr, direction, 'headers')
         print '\n'.join(self.headers)
+        print
 
-    def dump_data(from_addr, to_addr, direction='sending'):
-        dump_title(from_addr, to_addr, direction, 'data')
+    def dump_data(self, from_addr, to_addr, direction='sending'):
+        self.dump_title(from_addr, to_addr, direction, 'data')
         print repr(self.data)
+        print
 
     def dump(self, from_addr, to_addr, direction='sending'):
-        if options.dump_send_headers:
-            self.dump_headers(from_addr, to_addr, direction)
-        if options.dump_send_data:
-            self.dump_data(from_addr, to_addr, direction)
+        if direction == 'sending':
+            if options.dump_send_headers:
+                self.dump_headers(from_addr, to_addr, direction)
+            if options.dump_send_data and len(self.data):
+                self.dump_data(from_addr, to_addr, direction)
 
 
 class ClientChannel(asyncore.dispatcher):
@@ -225,8 +230,6 @@ class ClientChannel(asyncore.dispatcher):
         while len(data):
             rest = self.message.append(data)
             if self.message.complete:
-                if not hasattr(self.message, 'host_addr'):
-                    raise ValueError("could not find Host header")
                 self.message.dump(self.addr, self.message.host_addr)
                 # ServerChannel(self, self.message)
                 self.message = Message()
