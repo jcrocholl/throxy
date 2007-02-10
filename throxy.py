@@ -39,6 +39,7 @@ import re
 __revision__ = '$Rev$'
 
 KILO = 1000 # decimal or binary kilo
+MIN_PACKET_SIZE = 512 # bytes
 
 request_match = re.compile(r'^(GET) (\S+) (HTTP/\S+)$').match
 host_match = re.compile(r'^Host: (\S+)$').match
@@ -135,11 +136,29 @@ class ClientChannel(asyncore.dispatcher):
         self.buffer = []
         print "client %s:%d connected" % self.addr
 
+    def writable(self):
+        return len(self.buffer) and \
+               self.monitor.sendable() / 2 > MIN_PACKET_SIZE
+
+    def handle_write(self):
+        max_bytes = self.monitor.sendable() / 2
+        if max_bytes < MIN_PACKET_SIZE:
+            return
+        print "sendable", max_bytes
+        bytes = self.send(self.buffer[0][:max_bytes])
+        self.monitor.log_sent_bytes(bytes)
+        if bytes == len(self.buffer[0]):
+            self.buffer.pop(0)
+        else:
+            self.buffer[0] = self.buffer[0][bytes:]
+
     def readable(self):
-        return self.monitor.receivable()
+        return self.monitor.receivable() / 2 > MIN_PACKET_SIZE
 
     def handle_read(self):
-        max_bytes = self.monitor.receivable()
+        max_bytes = self.monitor.receivable() / 2
+        if max_bytes < MIN_PACKET_SIZE:
+            return
         print "receivable", max_bytes
         data = self.recv(max_bytes)
         if len(data):
@@ -164,19 +183,6 @@ class ClientChannel(asyncore.dispatcher):
             # print '#####################################'
             ServerChannel(self, self.request)
             self.request = []
-
-    def writable(self):
-        return len(self.buffer) and self.monitor.sendable()
-
-    def handle_write(self):
-        max_bytes = self.monitor.sendable()
-        print "sendable", max_bytes
-        bytes = self.send(self.buffer[0][:max_bytes])
-        self.monitor.log_sent_bytes(bytes)
-        if bytes == len(self.buffer[0]):
-            self.buffer.pop(0)
-        else:
-            self.buffer[0] = self.buffer[0][bytes:]
 
     def handle_close(self):
         self.close()
@@ -276,7 +282,7 @@ def _main():
     parser = OptionParser(version=version)
     parser.add_option('-i', dest='interface', action='store', type='string',
                       metavar='<ip>', default='',
-                      help="listen on this interface (default 127.0.0.1)")
+                      help="listen on this interface only (default all)")
     parser.add_option('-p', dest='port', action='store', type='int',
                       metavar='<number>', default=8080,
                       help="listen on this port number (default 8080)")
