@@ -146,10 +146,12 @@ class Message:
     def append(self, data):
         self.data += data
         while not self.headers_complete:
-            newline = self.data.find('\r\n')
+            newline = self.data.find('\n')
             if newline < 0:
                 break # no complete line found
             line = self.data[:newline]
+            if line[-1] == '\r':
+                line = line[:-1]
             if len(line):
                 self.headers.append(line)
             else:
@@ -171,6 +173,24 @@ class ClientChannel(asyncore.dispatcher):
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
 
+    def readable(self):
+        return monitor.receivable() / 2 > MIN_FRAGMENT_SIZE
+
+    def handle_read(self):
+        max_bytes = max(8192, monitor.receivable() / 2)
+        if max_bytes < MIN_FRAGMENT_SIZE:
+            return
+        # print "receivable", max_bytes
+        data = self.recv(max_bytes)
+        if not len(data):
+            return
+        monitor.log_received_bytes(len(data))
+        self.message.append(data)
+        if self.message.headers_complete:
+            for line in self.message.headers:
+                print repr(line)
+            print repr(self.message.data)
+
     def writable(self):
         return len(self.buffer) and \
                monitor.sendable() / 2 > MIN_FRAGMENT_SIZE
@@ -186,24 +206,6 @@ class ClientChannel(asyncore.dispatcher):
             self.buffer.pop(0)
         else:
             self.buffer[0] = self.buffer[0][bytes:]
-
-    def readable(self):
-        return monitor.receivable() / 2 > MIN_FRAGMENT_SIZE
-
-    def handle_read(self):
-        max_bytes = max(8192, monitor.receivable() / 2)
-        if max_bytes < MIN_FRAGMENT_SIZE:
-            return
-        # print "receivable", max_bytes
-        data = self.recv(max_bytes)
-        if not len(data):
-            return
-        monitor.log_received_bytes(len(data))
-        self.message.append(data)
-        if self.message.complete:
-            for line in self.message.headers:
-                print repr(line)
-            print repr(self.message.data)
 
     def handle_close(self):
         self.close()
