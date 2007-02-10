@@ -137,6 +137,8 @@ class Message:
     def extract_header(self, name, default=None):
         name = name.lower()
         for line in headers:
+            if not line.count(':'):
+                continue
             key, value = line.split(':', 1)
             if key.lower() == name:
                 return value.strip()
