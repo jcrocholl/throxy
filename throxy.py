@@ -195,9 +195,9 @@ class Message:
 
     def dump(self, from_addr, to_addr, direction='sending'):
         if options.dump_send_headers:
-            self.message.dump_headers(from_addr, to_addr)
+            self.dump_headers(from_addr, to_addr, direction)
         if options.dump_send_data:
-            self.message.dump_data(from_addr, to_addr)
+            self.dump_data(from_addr, to_addr, direction)
 
 
 class ClientChannel(asyncore.dispatcher):
