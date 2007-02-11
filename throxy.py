@@ -40,6 +40,8 @@ import sys
 import asyncore
 import socket
 import time
+import gzip
+import cStringIO
 import re
 
 __revision__ = '$Rev$'
@@ -68,7 +70,10 @@ class Header:
                 self.lines.append(line)
             else:
                 self.complete = True
-                self.content_type = self.extract('Content-Type', '')
+                self.content_type = self.extract('Content-Type')
+                self.content_encoding = self.extract('Content-Encoding')
+                if self.content_encoding == 'gzip':
+                    self.gzip_data = cStringIO.StringIO()
             self.data = self.data[newline+1:]
         if self.complete:
             # Give remaining data back to caller. It may contain
@@ -79,7 +84,7 @@ class Header:
         else:
             return ''
 
-    def extract(self, name, default=None):
+    def extract(self, name, default=''):
         name = name.lower()
         for line in self.lines:
             if not line.count(':'):
@@ -127,13 +132,37 @@ class Header:
 
     def dump_content(self, content, from_addr, to_addr, direction='sending'):
         self.dump_title(from_addr, to_addr, direction, 'content')
-        if self.content_type.startswith('text'):
-            print content
-        elif len(content) < 400:
-            print repr(content)
+        if self.content_encoding:
+            print "(%d bytes of %s with %s encoding)" % (len(content),
+                repr(self.content_type), repr(self.content_encoding))
         else:
-            print "(%d bytes of %s)" % (len(content), self.content_type)
+            print "(%d bytes of %s)" % (len(content), repr(self.content_type))
+        if self.content_encoding == 'gzip':
+            self.gzip_data.write(content)
+            try:
+                content = self.gunzip()
+            except IOError, message:
+                content = 'Could not gunzip: ' + message
+        if self.content_type.startswith('text/'):
+            limit = options.text_dump_limit
+        elif self.content_type.startswith('application/') and \
+                 self.content_type.count('xml'):
+            limit = options.text_dump_limit
+        else:
+            limit = options.data_dump_limit
+            content = repr(content)
+        if len(content) < limit or limit == 0:
+            print content
+        else:
+            print content[:limit] + ' ...'
         print
+
+    def gunzip(self):
+        gzip_file = gzip.GzipFile(
+            fileobj=self.gzip_data, mode='rb')
+        result = gzip_file.read()
+        gzip_file.close()
+        return result
 
 
 class ThrottleSender(asyncore.dispatcher):
@@ -222,7 +251,8 @@ class ClientChannel(ThrottleSender):
             if not len(data):
                 break
             if self.header.complete and self.content_length == 0:
-                print "*** starting new header for %s:%d ***" % self.addr
+                print >> sys.stderr, \
+                      "**** new request from client %s:%d ****" % self.addr
                 self.header = Header()
                 self.server = None
             data = self.header.append(data)
@@ -355,6 +385,12 @@ if __name__ == '__main__':
                       help="dump content sent to server")
     parser.add_option('-R', dest='dump_recv_content', action='store_true',
                       help="dump content received from server")
+    parser.add_option('-l', dest='text_dump_limit', action='store',
+                      metavar='<bytes>', type='int', default=1024,
+                      help="maximum length of dumped text (default 1024)")
+    parser.add_option('-L', dest='data_dump_limit', action='store',
+                      metavar='<bytes>', type='int', default=256,
+                      help="maximum length of dumped data (default 256)")
     options, args = parser.parse_args()
     proxy = ProxyServer()
     try:
