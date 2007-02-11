@@ -23,17 +23,17 @@
 # SOFTWARE.
 
 """
-Throxy (Throttling Proxy)
-
-This is a simple HTTP proxy, with the following features:
-
-* Simulates a slow connection (like dial-up).
-* Optionally dumps HTTP headers and content for debugging.
-* Supports multiple connections, without threading.
-* Written in pure Python.
+Throxy (Throttling Proxy), a simple HTTP proxy.
 
 To use it, run this script on your local machine and adjust your
 browser settings to use 127.0.0.1:8080 as HTTP proxy.
+
+* Simulates a slow connection (like dial-up).
+* Adjustable bandwidth limit for download and upload.
+* Optionally dumps HTTP headers and content for debugging.
+* Supports gzip decompression for debugging.
+* Supports multiple connections, without threading.
+* Only one source file, written in pure Python.
 """
 
 import sys
@@ -53,6 +53,7 @@ request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
 class Header:
+    """HTTP (request or reply) header parser."""
 
     def __init__(self):
         self.data = ''
@@ -60,11 +61,17 @@ class Header:
         self.complete = False
 
     def append(self, new_data):
+        """
+        Add more data to the header.
+
+        Any data after the end of the header is returned, as it may
+        contain content, or even the start of the next request.
+        """
         self.data += new_data
         while not self.complete:
             newline = self.data.find('\n')
             if newline < 0:
-                break # No complete line found.
+                break # No complete line found
             line = self.data[:newline].rstrip('\r')
             if len(line):
                 self.lines.append(line)
@@ -76,8 +83,6 @@ class Header:
                     self.gzip_data = cStringIO.StringIO()
             self.data = self.data[newline+1:]
         if self.complete:
-            # Give remaining data back to caller. It may contain
-            # content, or even the start of the next request.
             rest = self.data
             self.data = ''
             return rest
@@ -85,6 +90,7 @@ class Header:
             return ''
 
     def extract(self, name, default=''):
+        """Extract a header field."""
         name = name.lower()
         for line in self.lines:
             if not line.count(':'):
@@ -95,10 +101,10 @@ class Header:
         return default
 
     def extract_host(self):
+        """Extract host and perform DNS lookup."""
         self.host = self.extract('Host')
         if self.host is None:
             return
-        # print "client %s:%d wants to talk to" % self.client.addr, self.host
         if self.host.count(':'):
             self.host_name, self.host_port = self.host.split(':')
         else:
@@ -108,6 +114,7 @@ class Header:
         self.host_addr = (self.host_ip, self.host_port)
 
     def extract_request(self):
+        """Extract path from HTTP request."""
         match = request_match(self.lines[0])
         if not match:
             raise ValueError("malformed request line " + self.lines[0])
@@ -120,17 +127,20 @@ class Header:
         self.path = self.url[len(prefix):]
 
     def dump_title(self, from_addr, to_addr, direction, what):
+        """Print a title before dumping headers or content."""
         print '==== %s %s (%s:%d => %s:%d) ====' % (
             direction, what,
             from_addr[0], from_addr[1],
             to_addr[0], to_addr[1])
 
     def dump(self, from_addr, to_addr, direction='sending'):
+        """Dump header lines to stdout."""
         self.dump_title(from_addr, to_addr, direction, 'headers')
         print '\n'.join(self.lines)
         print
 
     def dump_content(self, content, from_addr, to_addr, direction='sending'):
+        """Dump content to stdout."""
         self.dump_title(from_addr, to_addr, direction, 'content')
         if self.content_encoding:
             print "(%d bytes of %s with %s encoding)" % (len(content),
@@ -155,13 +165,14 @@ class Header:
         if len(content) < limit or limit == 0:
             print content
         else:
-            print content[:limit] + '(truncated after %d bytes)' % limit
+            print content[:limit] + '(showing only %d bytes)' % limit
         print
 
     def gunzip(self):
+        """Decompress gzip content."""
         if self.gzip_data.tell() > options.gzip_size_limit:
             raise IOError("More than %d bytes" % options.gzip_size_limit)
-        self.gzip_data.seek(0) # seek to start of data
+        self.gzip_data.seek(0) # Seek to start of data
         try:
             gzip_file = gzip.GzipFile(
                 fileobj=self.gzip_data, mode='rb')
@@ -169,11 +180,12 @@ class Header:
             gzip_file.close()
         except struct.error:
             raise IOError("Caught struct.error from gzip module")
-        self.gzip_data.seek(0, 2) # seek to end of data
+        self.gzip_data.seek(0, 2) # Seek to end of data
         return result
 
 
 class ThrottleSender(asyncore.dispatcher):
+    """Data connection with send buffer and bandwidth limit."""
 
     def __init__(self, kbps, channel=None):
         if channel is None:
@@ -187,9 +199,11 @@ class ThrottleSender(asyncore.dispatcher):
         self.buffer = []
 
     def log_sent_bytes(self, bytes):
+        """Add timestamp and byte count to transmit log."""
         self.transmit_log.append((time.time(), bytes))
 
     def trim_log(self, horizon):
+        """Forget transmit log entries that are too old."""
         while len(self.transmit_log) and self.transmit_log[0][0] <= horizon:
             self.transmit_log.pop(0)
 
@@ -201,11 +215,11 @@ class ThrottleSender(asyncore.dispatcher):
             return 0
         weighted = 0.0
         for timestamp, bytes in self.transmit_log:
-            age = now - timestamp # Event's age in seconds.
+            age = now - timestamp # Event's age in seconds
             assert 0 <= age <= self.interval
             weight = 2.0 * (self.interval - age) / self.interval
             assert 0.0 <= weight <= 2.0
-            weighted += weight * bytes # Newer entries count more.
+            weighted += weight * bytes # Newer entries count more
         return int(weighted / self.interval)
 
     def weighted_kbps(self):
@@ -217,14 +231,15 @@ class ThrottleSender(asyncore.dispatcher):
         return max(0, self.bytes_per_second - self.weighted_bytes())
 
     def writable(self):
+        """Check if this channel is ready to write some data."""
         return (len(self.buffer) and
                 self.sendable() / 2 > self.fragment_size)
 
     def handle_write(self):
+        """Write some data to the socket."""
         max_bytes = self.sendable() / 2
         if max_bytes < self.fragment_size:
             return
-        # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
         self.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
@@ -234,6 +249,7 @@ class ThrottleSender(asyncore.dispatcher):
 
 
 class ClientChannel(ThrottleSender):
+    """A client connection."""
 
     def __init__(self, channel, addr):
         ThrottleSender.__init__(self, options.download, channel)
@@ -244,9 +260,11 @@ class ClientChannel(ThrottleSender):
         self.handle_connect()
 
     def readable(self):
+        """Check if this channel is ready to receive some data."""
         return self.server is None or len(self.server.buffer) == 0
 
     def handle_read(self):
+        """Read some data from the client."""
         data = self.recv(8192)
         while len(data):
             if self.content_length:
@@ -274,16 +292,19 @@ class ClientChannel(ThrottleSender):
                 self.server = ServerChannel(self, self.header)
 
     def handle_connect(self):
+        """Print connect message to stderr."""
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
 
     def handle_close(self):
+        """Print disconnect message to stderr."""
         self.close()
         if not options.quiet:
             print >> sys.stderr, "client %s:%d disconnected" % self.addr
 
 
 class ServerChannel(ThrottleSender):
+    """Connection to HTTP server."""
 
     def __init__(self, client, header):
         ThrottleSender.__init__(self, options.upload)
@@ -295,6 +316,7 @@ class ServerChannel(ThrottleSender):
         self.header = Header()
 
     def send_header(self, header):
+        """Send HTTP request header to the server."""
         header.extract_request()
         self.send_line(' '.join(
             (header.method, header.path, header.proto)))
@@ -307,9 +329,11 @@ class ServerChannel(ThrottleSender):
         self.send_line('')
 
     def send_line(self, line):
+        """Send one line of the request header to the server."""
         self.buffer.append(line + '\r\n')
 
     def receive_header(self, header):
+        """Send HTTP reply header to the client."""
         for line in header.lines:
             if not (line.startswith('Keep-Alive: ') or
                     line.startswith('Connection: ') or
@@ -318,12 +342,15 @@ class ServerChannel(ThrottleSender):
         self.receive_line('')
 
     def receive_line(self, line):
+        """Send one line of the reply header to the client."""
         self.client.buffer.append(line + '\r\n')
 
     def readable(self):
+        """Check if this channel is ready to receive some data."""
         return len(self.client.buffer) == 0
 
     def handle_read(self):
+        """Read some data from the server."""
         data = self.recv(8192)
         if not self.header.complete:
             data = self.header.append(data)
@@ -338,26 +365,30 @@ class ServerChannel(ThrottleSender):
             self.client.buffer.append(data)
 
     def handle_connect(self):
+        """Print connect message to stderr."""
         if not options.quiet:
             print >> sys.stderr, "server %s:%d connected" % self.addr
 
     def handle_close(self):
-        self.client.should_close = True
+        """Print disconnect message to stderr."""
         self.close()
         if not options.quiet:
             print >> sys.stderr, "server %s:%d disconnected" % self.addr
 
 
 class ProxyServer(asyncore.dispatcher):
+    """Listen for client connections."""
 
     def __init__(self):
         asyncore.dispatcher.__init__(self)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.bind((options.interface, options.port))
+        self.addr = (options.interface, options.port)
+        self.bind(self.addr)
         self.listen(5)
-        print >> sys.stderr, "listening on port", options.port
+        print >> sys.stderr, "listening on %s:%d" % self.addr
 
     def handle_accept(self):
+        """Accept a new connection from a client."""
         channel, addr = self.accept()
         if addr[0] == '127.0.0.1' or options.allow_remote:
             ClientChannel(channel, addr)
