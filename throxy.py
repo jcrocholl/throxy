@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 # throxy.py - HTTP proxy to simulate dial-up access
-# Copyright (C) 2007 Johann C. Rocholl <johann@rocholl.net>
+# Copyright (c) 2007 Johann C. Rocholl <johann@browsershots.org>
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
@@ -23,7 +23,7 @@
 # SOFTWARE.
 
 """
-Throxy (Throttling Proxy), a simple HTTP proxy.
+Throxy: throttling HTTP proxy in one Python file
 
 To use it, run this script on your local machine and adjust your
 browser settings to use 127.0.0.1:8080 as HTTP proxy.
