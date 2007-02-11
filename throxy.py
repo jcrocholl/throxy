@@ -362,35 +362,35 @@ if __name__ == '__main__':
     version = '%prog ' + __revision__.strip('$').replace('Rev: ', 'r')
     parser = OptionParser(version=version)
     parser.add_option('-i', dest='interface', action='store', type='string',
-                      metavar='<ip>', default='',
-                      help="listen on this interface only (default all)")
+        metavar='<ip>', default='',
+        help="listen on this interface only (default all)")
     parser.add_option('-p', dest='port', action='store', type='int',
-                      metavar='<port>', default=8080,
-                      help="listen on this port number (default 8080)")
+        metavar='<port>', default=8080,
+        help="listen on this port number (default 8080)")
     parser.add_option('-d', dest='download', action='store', type='float',
-                      metavar='<kbps>', default=28.8,
-                      help="download bandwidth in kbps (default 28.8)")
+        metavar='<kbps>', default=28.8,
+        help="download bandwidth in kbps (default 28.8)")
     parser.add_option('-u', dest='upload', action='store', type='float',
-                      metavar='<kbps>', default=28.8,
-                      help="upload bandwidth in kbps (default 28.8)")
+        metavar='<kbps>', default=28.8,
+        help="upload bandwidth in kbps (default 28.8)")
     parser.add_option('-o', dest='allow_remote', action='store_true',
-                      help="allow remote clients (WARNING: open proxy)")
+        help="allow remote clients (WARNING: open proxy)")
     parser.add_option('-q', dest='quiet', action='store_true',
-                      help="don't show connect and disconnect messages")
+        help="don't show connect and disconnect messages")
     parser.add_option('-s', dest='dump_send_headers', action='store_true',
-                      help="dump headers sent to server")
+        help="dump headers sent to server")
     parser.add_option('-r', dest='dump_recv_headers', action='store_true',
-                      help="dump headers received from server")
+        help="dump headers received from server")
     parser.add_option('-S', dest='dump_send_content', action='store_true',
-                      help="dump content sent to server")
+        help="dump content sent to server")
     parser.add_option('-R', dest='dump_recv_content', action='store_true',
-                      help="dump content received from server")
+        help="dump content received from server")
     parser.add_option('-l', dest='text_dump_limit', action='store',
-                      metavar='<bytes>', type='int', default=1024,
-                      help="maximum length of dumped text (default 1024)")
+        metavar='<bytes>', type='int', default=1024,
+        help="maximum length of dumped text content (default 1024)")
     parser.add_option('-L', dest='data_dump_limit', action='store',
-                      metavar='<bytes>', type='int', default=256,
-                      help="maximum length of dumped data (default 256)")
+        metavar='<bytes>', type='int', default=256,
+        help="maximum length of dumped binary content (default 256)")
     options, args = parser.parse_args()
     proxy = ProxyServer()
     try:
