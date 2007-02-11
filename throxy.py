@@ -141,8 +141,8 @@ class Header:
             self.gzip_data.write(content)
             try:
                 content = self.gunzip()
-            except IOError, message:
-                content = 'Could not gunzip: ' + message
+            except IOError, error:
+                content = 'Could not gunzip: ' + str(error)
         if self.content_type.startswith('text/'):
             limit = options.text_dump_limit
         elif self.content_type.startswith('application/') and \
@@ -158,10 +158,12 @@ class Header:
         print
 
     def gunzip(self):
+        self.gzip_data.seek(0) # seek to start of data
         gzip_file = gzip.GzipFile(
             fileobj=self.gzip_data, mode='rb')
         result = gzip_file.read()
         gzip_file.close()
+        self.gzip_data.seek(0, 2) # seek to end of data
         return result
 
 
