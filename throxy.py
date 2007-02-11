@@ -171,7 +171,7 @@ class Header:
             raise ValueError("URL doesn't start with " + prefix)
         self.path = self.url[len(prefix):]
 
-    def dump_title(self, from_addr, to_addr, direction='sending', what='data'):
+    def dump_title(self, from_addr, to_addr, direction, what):
         print '==== %s %s (%s:%d => %s:%d) ====' % (
             direction, what,
             from_addr[0], from_addr[1],
@@ -182,9 +182,9 @@ class Header:
         print '\n'.join(self.lines)
         print
 
-    def dump_data(self, data, from_addr, to_addr, direction='sending'):
-        self.dump_title(from_addr, to_addr, direction, 'data')
-        print repr(data)
+    def dump_content(self, content, from_addr, to_addr, direction='sending'):
+        self.dump_title(from_addr, to_addr, direction, 'content')
+        print repr(content)
         print
 
 
@@ -215,8 +215,13 @@ class ClientChannel(asyncore.dispatcher):
             if self.content_length:
                 bytes = min(self.content_length, len(data))
                 self.server.buffer.append(data[:bytes])
+                if options.dump_send_content:
+                    self.header.dump_content(
+                        data[:bytes], self.addr, self.header.host_addr)
                 data = data[bytes:]
                 self.content_length -= bytes
+                if self.content_length == 0:
+                    self.header = Header()
             if not len(data):
                 break
             data = self.header.append(data)
@@ -224,9 +229,9 @@ class ClientChannel(asyncore.dispatcher):
                 self.content_length = int(
                     self.header.extract_header('Content-Length', 0))
                 self.header.extract_host()
-                self.header.dump_headers(self.addr, self.header.host_addr)
+                if options.dump_send_headers:
+                    self.header.dump_headers(self.addr, self.header.host_addr)
                 self.server = ServerChannel(self, self.header)
-                self.header = Header()
 
     def writable(self):
         return len(self.buffer) and \
@@ -344,10 +349,10 @@ if __name__ == '__main__':
                       help="dump headers sent to server")
     parser.add_option('-r', dest='dump_recv_headers', action='store_true',
                       help="dump headers received from server")
-    parser.add_option('-S', dest='dump_send_data', action='store_true',
-                      help="dump data sent to server")
-    parser.add_option('-R', dest='dump_recv_data', action='store_true',
-                      help="dump data received from server")
+    parser.add_option('-S', dest='dump_send_content', action='store_true',
+                      help="dump content sent to server")
+    parser.add_option('-R', dest='dump_recv_content', action='store_true',
+                      help="dump content received from server")
     options, args = parser.parse_args()
     monitor = BandwidthMonitor(
         int(options.upload * KILO) / 8,
