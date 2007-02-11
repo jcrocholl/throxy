@@ -119,7 +119,7 @@ class Header:
             from_addr[0], from_addr[1],
             to_addr[0], to_addr[1])
 
-    def dump_headers(self, from_addr, to_addr, direction='sending'):
+    def dump(self, from_addr, to_addr, direction='sending'):
         self.dump_title(from_addr, to_addr, direction, 'headers')
         print '\n'.join(self.lines)
         print
@@ -224,7 +224,7 @@ class ClientChannel(ThrottleSender):
                     self.header.extract_header('Content-Length', 0))
                 self.header.extract_host()
                 if options.dump_send_headers:
-                    self.header.dump_headers(self.addr, self.header.host_addr)
+                    self.header.dump(self.addr, self.header.host_addr)
                 self.server = ServerChannel(self, self.header)
 
     def handle_connect(self):
@@ -268,7 +268,12 @@ class ServerChannel(ThrottleSender):
 
     def handle_read(self):
         data = self.recv(8192)
-        self.client.buffer.append(data)
+        if not self.header.complete:
+            data = self.header.append(data)
+            if self.header.complete and options.dump_recv_headers:
+                self.header.dump(self.addr, self.client.addr, 'receiving')
+        if self.header.complete:
+            self.client.buffer.append(data)
 
     def handle_connect(self):
         if not options.quiet:
