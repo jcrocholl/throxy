@@ -35,17 +35,17 @@ browser settings to use 127.0.0.1:8080 as HTTP proxy.
 * Multiple connections, without threads (uses asyncore).
 * Only one source file, written in pure Python.
 
-Tell command line tools to use the proxy:
-$ export http_proxy=127.0.0.1:8080
-
 Simulate analog modem connection:
 $ python throxy.py -u28.8 -d57.6
 
-Dump HTTP headers (request & reply) to stdout:
+Show all HTTP headers (request & reply):
 $ python throxy.py -qrs
 
 Dump HTTP headers and content to a file, without size limits:
 $ python throxy.py -rsRS -l0 -L0 -g0 > dump.txt
+
+Tell command line tools to use the proxy:
+$ export http_proxy=127.0.0.1:8080
 """
 
 import sys
