@@ -28,12 +28,21 @@ Throxy (Throttling Proxy), a simple HTTP proxy.
 To use it, run this script on your local machine and adjust your
 browser settings to use 127.0.0.1:8080 as HTTP proxy.
 
-* Simulates a slow connection (like dial-up).
+* Simulate a slow connection (like dial-up).
 * Adjustable bandwidth limit for download and upload.
-* Optionally dumps HTTP headers and content for debugging.
-* Supports gzip decompression for debugging.
-* Supports multiple connections, without threading.
+* Optionally dump HTTP headers and content for debugging.
+* Decompress gzip content encoding for debugging.
+* Multiple connections, without threads (uses asyncore).
 * Only one source file, written in pure Python.
+
+Tell command line tools to use the proxy:
+$ export http_proxy=127.0.0.1:8080
+
+Simulate analog modem:
+$ python throxy.py -u28.8 -d57.6
+
+Dump full HTTP headers and content to a file:
+$ python throxy.py -rsRS -l0 -L0 -g0 > dump.txt
 """
 
 import sys
