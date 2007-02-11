@@ -50,64 +50,6 @@ MIN_FRAGMENT_SIZE = 512 # bytes
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
-class BandwidthMonitor:
-
-    def __init__(self,
-                 receive_bytes_per_second=3600,
-                 send_bytes_per_second=3600,
-                 interval=1.0):
-        self.recv_bps = receive_bytes_per_second
-        self.send_bps = send_bytes_per_second
-        self.interval = interval
-        self.recv_log = []
-        self.send_log = []
-
-    def log_received_bytes(self, bytes):
-        self.recv_log.append((time.time(), bytes))
-
-    def log_sent_bytes(self, bytes):
-        self.send_log.append((time.time(), bytes))
-
-    def trim_log(self, log, horizon):
-        while len(log) and log[0][0] <= horizon:
-            log.pop(0)
-
-    def weighted_bytes(self, log):
-        """Compute recent bandwidth usage, in bytes per second."""
-        now = time.time()
-        self.trim_log(log, now - self.interval)
-        if len(log) == 0:
-            return 0
-        weighted = 0.0
-        for timestamp, bytes in log:
-            age = now - timestamp # Event's age in seconds.
-            assert 0 <= age <= self.interval
-            weight = 2.0 * (self.interval - age) / self.interval
-            assert 0.0 <= weight <= 2.0
-            weighted += weight * bytes # Newer entries count more.
-        return int(weighted / self.interval)
-
-    def sendable(self):
-        """How many bytes can we send without exceeding bandwidth?"""
-        return max(0, self.send_bps - self.weighted_bytes(self.send_log))
-
-    def receivable(self):
-        """How many bytes can we receive without exceeding bandwidth?"""
-        return max(0, self.recv_bps - self.weighted_bytes(self.recv_log))
-
-    def weighted_kbps(self, log):
-        """Compute bandwidth usage, in kbps."""
-        return 8 * self.weighted_bytes(log) / float(KILO)
-
-    def receiving_kpbs(self):
-        """Compute download bandwidth usage, in kbps."""
-        return self.weighted_kbps(self.recv_log)
-
-    def sending_kpbs(self):
-        """Compute upload bandwidth usage, in kbps."""
-        return self.weighted_kbps(self.send_log)
-
-
 class Header:
 
     def __init__(self):
@@ -190,26 +132,57 @@ class Header:
 
 class ThrottleSender(asyncore.dispatcher):
 
-    def __init__(self, limit_function, log_function, channel=None):
+    def __init__(self, kbps, channel=None):
         if channel is None:
             asyncore.dispatcher.__init__(self)
         else:
             asyncore.dispatcher.__init__(self, channel)
-        self.limit_function = limit_function
-        self.log_function = log_function
+        self.interval = 1.0
+        self.bytes_per_second = int(kbps * KILO) / 8
+        self.transmit_log = []
         self.buffer = []
+
+    def log_sent_bytes(self, bytes):
+        self.transmit_log.append((time.time(), bytes))
+
+    def trim_log(self, horizon):
+        while len(self.transmit_log) and self.transmit_log[0][0] <= horizon:
+            self.transmit_log.pop(0)
+
+    def weighted_bytes(self):
+        """Compute recent bandwidth usage, in bytes per second."""
+        now = time.time()
+        self.trim_log(now - self.interval)
+        if len(self.transmit_log) == 0:
+            return 0
+        weighted = 0.0
+        for timestamp, bytes in self.transmit_log:
+            age = now - timestamp # Event's age in seconds.
+            assert 0 <= age <= self.interval
+            weight = 2.0 * (self.interval - age) / self.interval
+            assert 0.0 <= weight <= 2.0
+            weighted += weight * bytes # Newer entries count more.
+        return int(weighted / self.interval)
+
+    def weighted_kbps(self):
+        """Compute recent bandwidth usage, in kbps."""
+        return 8 * self.weighted_bytes() / float(KILO)
+
+    def sendable(self):
+        """How many bytes can we send without exceeding bandwidth?"""
+        return max(0, self.bytes_per_second - self.weighted_bytes())
 
     def writable(self):
         return (len(self.buffer) and
-                self.limit_function() / 2 > MIN_FRAGMENT_SIZE)
+                self.sendable() / 2 > MIN_FRAGMENT_SIZE)
 
     def handle_write(self):
-        max_bytes = self.limit_function() / 2
+        max_bytes = self.sendable() / 2
         if max_bytes < MIN_FRAGMENT_SIZE:
             return
         # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
-        self.log_function(bytes)
+        self.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
             self.buffer.pop(0)
         else:
@@ -219,8 +192,7 @@ class ThrottleSender(asyncore.dispatcher):
 class ClientChannel(ThrottleSender):
 
     def __init__(self, channel, addr):
-        ThrottleSender.__init__(self,
-            monitor.receivable, monitor.log_received_bytes, channel)
+        ThrottleSender.__init__(self, options.download, channel)
         self.addr = addr
         self.header = Header()
         self.content_length = 0
@@ -232,14 +204,9 @@ class ClientChannel(ThrottleSender):
         return self.server is None or len(self.server.buffer) == 0
 
     def handle_read(self):
-        max_bytes = max(8192, monitor.receivable() / 2)
-        if max_bytes < MIN_FRAGMENT_SIZE:
-            return
-        # print "receivable", max_bytes
-        data = self.recv(max_bytes)
+        data = self.recv(8192)
         if not len(data):
             return
-        monitor.log_received_bytes(len(data))
         while len(data):
             if self.content_length:
                 bytes = min(self.content_length, len(data))
@@ -272,8 +239,7 @@ class ClientChannel(ThrottleSender):
 class ServerChannel(ThrottleSender):
 
     def __init__(self, client, header):
-        ThrottleSender.__init__(self,
-            monitor.sendable, monitor.log_sent_bytes)
+        ThrottleSender.__init__(self, options.upload)
         self.client = client
         self.addr = header.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -361,9 +327,6 @@ if __name__ == '__main__':
     parser.add_option('-R', dest='dump_recv_content', action='store_true',
                       help="dump content received from server")
     options, args = parser.parse_args()
-    monitor = BandwidthMonitor(
-        int(options.download * KILO) / 8,
-        int(options.upload * KILO) / 8)
     proxy = ProxyServer()
     try:
         asyncore.loop(timeout=0.1)
