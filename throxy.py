@@ -155,7 +155,7 @@ class Header:
         if len(content) < limit or limit == 0:
             print content
         else:
-            print content[:limit] + ' ...'
+            print content[:limit] + '(truncated after %d bytes)' % limit
         print
 
     def gunzip(self):
@@ -261,7 +261,7 @@ class ClientChannel(ThrottleSender):
                 break
             if self.header.complete and self.content_length == 0:
                 print >> sys.stderr, \
-                      "**** new request from client %s:%d ****" % self.addr
+                      "client %s:%d sends a new request" % self.addr
                 self.header = Header()
                 self.server = None
             data = self.header.append(data)
