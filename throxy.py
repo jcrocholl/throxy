@@ -41,6 +41,7 @@ import asyncore
 import socket
 import time
 import gzip
+import struct
 import cStringIO
 import re
 
@@ -138,7 +139,8 @@ class Header:
         else:
             print "(%d bytes of %s)" % (len(content), repr(self.content_type))
         if self.content_encoding == 'gzip':
-            self.gzip_data.write(content)
+            if self.gzip_data.tell() < options.gzip_size_limit:
+                self.gzip_data.write(content)
             try:
                 content = self.gunzip()
             except IOError, error:
@@ -158,11 +160,16 @@ class Header:
         print
 
     def gunzip(self):
+        if self.gzip_data.tell() > options.gzip_size_limit:
+            raise IOError("More than %d bytes" % options.gzip_size_limit)
         self.gzip_data.seek(0) # seek to start of data
-        gzip_file = gzip.GzipFile(
-            fileobj=self.gzip_data, mode='rb')
-        result = gzip_file.read()
-        gzip_file.close()
+        try:
+            gzip_file = gzip.GzipFile(
+                fileobj=self.gzip_data, mode='rb')
+            result = gzip_file.read()
+            gzip_file.close()
+        except struct.error:
+            raise IOError("Caught struct.error from gzip module")
         self.gzip_data.seek(0, 2) # seek to end of data
         return result
 
@@ -393,6 +400,9 @@ if __name__ == '__main__':
     parser.add_option('-L', dest='data_dump_limit', action='store',
         metavar='<bytes>', type='int', default=256,
         help="maximum length of dumped binary content (default 256)")
+    parser.add_option('-g', dest='gzip_size_limit', action='store',
+        metavar='<bytes>', type='int', default=8192,
+        help="maximum size for gzip decompression (default 8192)")
     options, args = parser.parse_args()
     proxy = ProxyServer()
     try:
