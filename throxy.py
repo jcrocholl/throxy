@@ -157,7 +157,8 @@ class Header:
         else:
             print "(%d bytes of %s)" % (len(content), repr(self.content_type))
         if self.content_encoding == 'gzip':
-            if self.gzip_data.tell() < options.gzip_size_limit:
+            if options.gzip_size_limit == 0 or \
+                   self.gzip_data.tell() < options.gzip_size_limit:
                 self.gzip_data.write(content)
             try:
                 content = self.gunzip()
