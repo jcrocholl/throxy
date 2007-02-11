@@ -197,16 +197,13 @@ class ClientChannel(ThrottleSender):
         self.header = Header()
         self.content_length = 0
         self.server = None
-        if not options.quiet:
-            print >> sys.stderr, "client %s:%d connected" % self.addr
+        self.handle_connect()
 
     def readable(self):
         return self.server is None or len(self.server.buffer) == 0
 
     def handle_read(self):
         data = self.recv(8192)
-        if not len(data):
-            return
         while len(data):
             if self.content_length:
                 bytes = min(self.content_length, len(data))
@@ -229,6 +226,10 @@ class ClientChannel(ThrottleSender):
                 if options.dump_send_headers:
                     self.header.dump_headers(self.addr, self.header.host_addr)
                 self.server = ServerChannel(self, self.header)
+
+    def handle_connect(self):
+        if not options.quiet:
+            print >> sys.stderr, "client %s:%d connected" % self.addr
 
     def handle_close(self):
         self.close()
