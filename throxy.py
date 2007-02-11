@@ -211,6 +211,7 @@ class ThrottleSender(asyncore.dispatcher):
         self.fragment_size = min(512, self.bytes_per_second / 4)
         self.transmit_log = []
         self.buffer = []
+        self.should_close = False
 
     def log_sent_bytes(self, bytes):
         """Add timestamp and byte count to transmit log."""
@@ -260,6 +261,12 @@ class ThrottleSender(asyncore.dispatcher):
             self.buffer.pop(0)
         else:
             self.buffer[0] = self.buffer[0][bytes:]
+        self.check_close()
+
+    def check_close(self):
+        """Close if requested and all data was sent."""
+        if self.should_close and len(self.buffer) == 0:
+            self.close()
 
 
 class ClientChannel(ThrottleSender):
@@ -389,6 +396,9 @@ class ServerChannel(ThrottleSender):
         self.close()
         if not options.quiet:
             print >> sys.stderr, "server %s:%d disconnected" % self.addr
+        if self.header.extract('Connection').lower() == 'close':
+            self.client.should_close = True
+            self.client.check_close()
 
 
 class ProxyServer(asyncore.dispatcher):
