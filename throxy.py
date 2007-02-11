@@ -80,11 +80,11 @@ class BandwidthMonitor:
             return 0
         weighted = 0.0
         for timestamp, bytes in log:
-            age = now - timestamp # event's age in seconds
+            age = now - timestamp # Event's age in seconds.
             assert 0 <= age <= self.interval
             weight = 2.0 * (self.interval - age) / self.interval
             assert 0.0 <= weight <= 2.0
-            weighted += weight * bytes # newer entries count more
+            weighted += weight * bytes # Newer entries count more.
         return int(weighted / self.interval)
 
     def sendable(self):
@@ -108,52 +108,46 @@ class BandwidthMonitor:
         return self.weighted_kbps(self.send_log)
 
 
-class Message:
+class Header:
 
     def __init__(self):
-        self.headers = []
-        self.data = ''
-        self.headers_complete = False
+        self.lines = []
         self.complete = False
-        self.host = ''
-        self.host_addr = ('unknown', 80)
 
     def append(self, new_data):
         self.data += new_data
-        while not self.headers_complete:
+        while not self.complete:
             newline = self.data.find('\n')
             if newline < 0:
-                break # no complete line found
-            line = self.data[:newline]
-            if len(line) and line[-1] == '\r':
-                line = line[:-1]
+                break # No complete line found.
+            line = self.data[:newline].rstrip('\r')
             if len(line):
-                self.headers.append(line)
+                self.lines.append(line)
             else:
-                self.headers_complete = True
-            self.data = self.data[newline+1:]
-        if self.headers_complete:
-            self.content_length = int(
-                self.extract_header('Content-Length', 0))
-            if len(self.data) >= self.content_length:
                 self.complete = True
-            if len(self.data) > self.content_length:
-                rest = self.data[self.content_length:]
-                self.data = self.data[:self.content_length]
-                while len(rest) and rest[0] in '\r\n':
-                    rest = rest[1:]
-                return rest
-        return ''
+            self.data = self.data[newline+1:]
+        if self.complete:
+            # Give remaining data back to caller. It may contain
+            # content, or even the start of the next request.
+            rest = self.data
+            self.data = ''
+            return rest
+        else:
+            return ''
 
     def extract_header(self, name, default=None):
         name = name.lower()
-        for line in self.headers:
+        for line in self.lines:
             if not line.count(':'):
                 continue
             key, value = line.split(':', 1)
             if key.lower() == name:
                 return value.strip()
         return default
+
+    def extract_content_length(self):
+        self.content_length = int(
+            self.extract_header('Content-Length', 0))
 
     def extract_host(self):
         self.host = self.extract_header('Host')
@@ -169,9 +163,9 @@ class Message:
         self.host_addr = (self.host_ip, self.host_port)
 
     def extract_request(self):
-        match = request_match(self.headers[0])
+        match = request_match(self.lines[0])
         if not match:
-            raise ValueError("malformed request line " + self.headers[0])
+            raise ValueError("malformed request line " + self.lines[0])
         self.method, self.url, self.proto = match.groups()
         if self.method.upper() == 'CONNECT':
             raise ValueError("method CONNECT is not supported")
@@ -188,7 +182,7 @@ class Message:
 
     def dump_headers(self, from_addr, to_addr, direction='sending'):
         self.dump_title(from_addr, to_addr, direction, 'headers')
-        print '\n'.join(self.headers)
+        print '\n'.join(self.lines)
         print
 
     def dump_data(self, from_addr, to_addr, direction='sending'):
@@ -229,6 +223,7 @@ class ClientChannel(asyncore.dispatcher):
         while len(data):
             rest = self.message.append(data)
             if self.message.complete:
+                self.message.extract_content_length()
                 self.message.extract_host()
                 self.message.dump(self.addr, self.message.host_addr)
                 ServerChannel(self, self.message)
@@ -259,27 +254,26 @@ class ClientChannel(asyncore.dispatcher):
 
 class ServerChannel(asyncore.dispatcher):
 
-    def __init__(self, client, message):
+    def __init__(self, client, header):
         asyncore.dispatcher.__init__(self)
         self.buffer = []
         self.client = client
-        self.addr = message.host_addr
+        self.addr = header.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
-        self.send_message(message)
+        self.send_header(header)
 
-    def send_message(self, message):
-        message.extract_request()
+    def send_header(self, header):
+        header.extract_request()
         self.send_line(' '.join(
-            (message.method, message.path, message.proto)))
+            (header.method, header.path, header.proto)))
         self.send_line('Connection: close')
-        for line in message.headers[1:]:
+        for line in header.lines[1:]:
             if not (line.startswith('Keep-Alive: ') or
                     line.startswith('Connection: ') or
                     line.startswith('Proxy-')):
                 self.send_line(line)
         self.send_line('')
-        self.buffer.append(message.data)
 
     def send_line(self, line):
         self.buffer.append(line + '\r\n')
