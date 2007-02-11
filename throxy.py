@@ -224,11 +224,12 @@ class ClientChannel(ThrottleSender):
         self.addr = addr
         self.header = Header()
         self.content_length = 0
+        self.server = None
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
 
     def readable(self):
-        return monitor.receivable() / 2 > MIN_FRAGMENT_SIZE
+        return self.server is None or len(self.server.buffer) == 0
 
     def handle_read(self):
         max_bytes = max(8192, monitor.receivable() / 2)
@@ -250,6 +251,7 @@ class ClientChannel(ThrottleSender):
                 self.content_length -= bytes
                 if self.content_length == 0:
                     self.header = Header()
+                    self.server = None
             if not len(data):
                 break
             data = self.header.append(data)
@@ -293,6 +295,9 @@ class ServerChannel(ThrottleSender):
 
     def send_line(self, line):
         self.buffer.append(line + '\r\n')
+
+    def readable(self):
+        return len(self.client.buffer) == 0
 
     def handle_read(self):
         data = self.recv(8192)
