@@ -68,6 +68,7 @@ class Header:
                 self.lines.append(line)
             else:
                 self.complete = True
+                self.content_type = self.extract('Content-Type', '')
             self.data = self.data[newline+1:]
         if self.complete:
             # Give remaining data back to caller. It may contain
@@ -78,7 +79,7 @@ class Header:
         else:
             return ''
 
-    def extract_header(self, name, default=None):
+    def extract(self, name, default=None):
         name = name.lower()
         for line in self.lines:
             if not line.count(':'):
@@ -89,7 +90,7 @@ class Header:
         return default
 
     def extract_host(self):
-        self.host = self.extract_header('Host')
+        self.host = self.extract('Host')
         if self.host is None:
             return
         # print "client %s:%d wants to talk to" % self.client.addr, self.host
@@ -126,7 +127,12 @@ class Header:
 
     def dump_content(self, content, from_addr, to_addr, direction='sending'):
         self.dump_title(from_addr, to_addr, direction, 'content')
-        print repr(content)
+        if self.content_type.startswith('text'):
+            print content
+        elif len(content) < 400:
+            print repr(content)
+        else:
+            print "(%d bytes of %s)" % (len(content), self.content_type)
         print
 
 
@@ -213,15 +219,16 @@ class ClientChannel(ThrottleSender):
                         data[:bytes], self.addr, self.header.host_addr)
                 data = data[bytes:]
                 self.content_length -= bytes
-                if self.content_length == 0:
-                    self.header = Header()
-                    self.server = None
             if not len(data):
                 break
+            if self.header.complete and self.content_length == 0:
+                print "*** starting new header for %s:%d ***" % self.addr
+                self.header = Header()
+                self.server = None
             data = self.header.append(data)
             if self.header.complete:
                 self.content_length = int(
-                    self.header.extract_header('Content-Length', 0))
+                    self.header.extract('Content-Length', 0))
                 self.header.extract_host()
                 if options.dump_send_headers:
                     self.header.dump(self.addr, self.header.host_addr)
@@ -263,6 +270,17 @@ class ServerChannel(ThrottleSender):
     def send_line(self, line):
         self.buffer.append(line + '\r\n')
 
+    def receive_header(self, header):
+        for line in header.lines:
+            if not (line.startswith('Keep-Alive: ') or
+                    line.startswith('Connection: ') or
+                    line.startswith('Proxy-')):
+                self.receive_line(line)
+        self.receive_line('')
+
+    def receive_line(self, line):
+        self.client.buffer.append(line + '\r\n')
+
     def readable(self):
         return len(self.client.buffer) == 0
 
@@ -270,9 +288,14 @@ class ServerChannel(ThrottleSender):
         data = self.recv(8192)
         if not self.header.complete:
             data = self.header.append(data)
-            if self.header.complete and options.dump_recv_headers:
-                self.header.dump(self.addr, self.client.addr, 'receiving')
-        if self.header.complete:
+            if self.header.complete:
+                if options.dump_recv_headers:
+                    self.header.dump(self.addr, self.client.addr, 'receiving')
+                self.receive_header(self.header)
+        if self.header.complete and len(data):
+            if options.dump_recv_content:
+                self.header.dump_content(
+                    data, self.addr, self.client.addr, 'receiving')
             self.client.buffer.append(data)
 
     def handle_connect(self):
