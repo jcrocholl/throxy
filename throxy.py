@@ -48,7 +48,6 @@ import re
 __revision__ = '$Rev$'
 
 KILO = 1000 # decimal or binary kilo
-MIN_FRAGMENT_SIZE = 512 # bytes
 
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
@@ -183,6 +182,7 @@ class ThrottleSender(asyncore.dispatcher):
             asyncore.dispatcher.__init__(self, channel)
         self.interval = 1.0
         self.bytes_per_second = int(kbps * KILO) / 8
+        self.fragment_size = min(512, self.bytes_per_second / 4)
         self.transmit_log = []
         self.buffer = []
 
@@ -218,11 +218,11 @@ class ThrottleSender(asyncore.dispatcher):
 
     def writable(self):
         return (len(self.buffer) and
-                self.sendable() / 2 > MIN_FRAGMENT_SIZE)
+                self.sendable() / 2 > self.fragment_size)
 
     def handle_write(self):
         max_bytes = self.sendable() / 2
-        if max_bytes < MIN_FRAGMENT_SIZE:
+        if max_bytes < self.fragment_size:
             return
         # print "sendable", max_bytes
         bytes = self.send(self.buffer[0][:max_bytes])
