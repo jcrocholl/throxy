@@ -170,7 +170,8 @@ class Header:
 
     def gunzip(self):
         """Decompress gzip content."""
-        if self.gzip_data.tell() > options.gzip_size_limit:
+        if options.gzip_size_limit and \
+               self.gzip_data.tell() > options.gzip_size_limit:
             raise IOError("More than %d bytes" % options.gzip_size_limit)
         self.gzip_data.seek(0) # Seek to start of data
         try:
