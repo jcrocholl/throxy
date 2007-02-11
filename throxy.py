@@ -111,6 +111,7 @@ class BandwidthMonitor:
 class Header:
 
     def __init__(self):
+        self.data = ''
         self.lines = []
         self.complete = False
 
@@ -144,10 +145,6 @@ class Header:
             if key.lower() == name:
                 return value.strip()
         return default
-
-    def extract_content_length(self):
-        self.content_length = int(
-            self.extract_header('Content-Length', 0))
 
     def extract_host(self):
         self.host = self.extract_header('Host')
@@ -185,17 +182,10 @@ class Header:
         print '\n'.join(self.lines)
         print
 
-    def dump_data(self, from_addr, to_addr, direction='sending'):
+    def dump_data(self, data, from_addr, to_addr, direction='sending'):
         self.dump_title(from_addr, to_addr, direction, 'data')
-        print repr(self.data)
+        print repr(data)
         print
-
-    def dump(self, from_addr, to_addr, direction='sending'):
-        if direction == 'sending':
-            if options.dump_send_headers:
-                self.dump_headers(from_addr, to_addr, direction)
-            if options.dump_send_data and len(self.data):
-                self.dump_data(from_addr, to_addr, direction)
 
 
 class ClientChannel(asyncore.dispatcher):
@@ -203,7 +193,8 @@ class ClientChannel(asyncore.dispatcher):
     def __init__(self, channel, addr):
         asyncore.dispatcher.__init__(self, channel)
         self.addr = addr
-        self.message = Message()
+        self.header = Header()
+        self.content_length = 0
         self.buffer = []
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
@@ -221,14 +212,21 @@ class ClientChannel(asyncore.dispatcher):
             return
         monitor.log_received_bytes(len(data))
         while len(data):
-            rest = self.message.append(data)
-            if self.message.complete:
-                self.message.extract_content_length()
-                self.message.extract_host()
-                self.message.dump(self.addr, self.message.host_addr)
-                ServerChannel(self, self.message)
-                self.message = Message()
-            data = rest
+            if self.content_length:
+                bytes = min(self.content_length, len(data))
+                self.server.buffer.append(data[:bytes])
+                data = data[bytes:]
+                self.content_length -= bytes
+            if not len(data):
+                break
+            data = self.header.append(data)
+            if self.header.complete:
+                self.content_length = int(
+                    self.header.extract_header('Content-Length', 0))
+                self.header.extract_host()
+                self.header.dump_headers(self.addr, self.header.host_addr)
+                self.server = ServerChannel(self, self.header)
+                self.header = Header()
 
     def writable(self):
         return len(self.buffer) and \
@@ -262,6 +260,7 @@ class ServerChannel(asyncore.dispatcher):
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connect(self.addr)
         self.send_header(header)
+        self.header = Header()
 
     def send_header(self, header):
         header.extract_request()
