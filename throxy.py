@@ -38,10 +38,13 @@ browser settings to use 127.0.0.1:8080 as HTTP proxy.
 Tell command line tools to use the proxy:
 $ export http_proxy=127.0.0.1:8080
 
-Simulate analog modem:
+Simulate analog modem connection:
 $ python throxy.py -u28.8 -d57.6
 
-Dump full HTTP headers and content to a file:
+Dump HTTP headers (request & reply) to stdout:
+$ python throxy.py -qrs
+
+Dump HTTP headers and content to a file, without size limits:
 $ python throxy.py -rsRS -l0 -L0 -g0 > dump.txt
 """
 
@@ -289,8 +292,9 @@ class ClientChannel(ThrottleSender):
             if not len(data):
                 break
             if self.header.complete and self.content_length == 0:
-                print >> sys.stderr, \
-                      "client %s:%d sends a new request" % self.addr
+                if not options.quiet:
+                    print >> sys.stderr, \
+                          "client %s:%d sends a new request" % self.addr
                 self.header = Header()
                 self.server = None
             data = self.header.append(data)
@@ -396,7 +400,8 @@ class ProxyServer(asyncore.dispatcher):
         self.addr = (options.interface, options.port)
         self.bind(self.addr)
         self.listen(5)
-        print >> sys.stderr, "listening on %s:%d" % self.addr
+        if not options.quiet:
+            print >> sys.stderr, "listening on %s:%d" % self.addr
 
     def handle_accept(self):
         """Accept a new connection from a client."""
@@ -405,7 +410,8 @@ class ProxyServer(asyncore.dispatcher):
             ClientChannel(channel, addr)
         else:
             channel.close()
-            print >> sys.stderr, "remote client %s:%d not allowed" % addr
+            if not options.quiet:
+                print >> sys.stderr, "remote client %s:%d not allowed" % addr
 
 
 if __name__ == '__main__':
