@@ -188,14 +188,42 @@ class Header:
         print
 
 
-class ClientChannel(asyncore.dispatcher):
+class ThrottleSender(asyncore.dispatcher):
+
+    def __init__(self, limit_function, log_function, channel=None):
+        if channel is None:
+            asyncore.dispatcher.__init__(self)
+        else:
+            asyncore.dispatcher.__init__(self, channel)
+        self.limit_function = limit_function
+        self.log_function = log_function
+        self.buffer = []
+
+    def writable(self):
+        return (len(self.buffer) and
+                self.limit_function() / 2 > MIN_FRAGMENT_SIZE)
+
+    def handle_write(self):
+        max_bytes = self.limit_function() / 2
+        if max_bytes < MIN_FRAGMENT_SIZE:
+            return
+        # print "sendable", max_bytes
+        bytes = self.send(self.buffer[0][:max_bytes])
+        self.log_function(bytes)
+        if bytes == len(self.buffer[0]):
+            self.buffer.pop(0)
+        else:
+            self.buffer[0] = self.buffer[0][bytes:]
+
+
+class ClientChannel(ThrottleSender):
 
     def __init__(self, channel, addr):
-        asyncore.dispatcher.__init__(self, channel)
+        ThrottleSender.__init__(self,
+            monitor.receivable, monitor.log_received_bytes, channel)
         self.addr = addr
         self.header = Header()
         self.content_length = 0
-        self.buffer = []
         if not options.quiet:
             print >> sys.stderr, "client %s:%d connected" % self.addr
 
@@ -233,33 +261,17 @@ class ClientChannel(asyncore.dispatcher):
                     self.header.dump_headers(self.addr, self.header.host_addr)
                 self.server = ServerChannel(self, self.header)
 
-    def writable(self):
-        return len(self.buffer) and \
-               monitor.sendable() / 2 > MIN_FRAGMENT_SIZE
-
-    def handle_write(self):
-        max_bytes = monitor.sendable() / 2
-        if max_bytes < MIN_FRAGMENT_SIZE:
-            return
-        # print "sendable", max_bytes
-        bytes = self.send(self.buffer[0][:max_bytes])
-        monitor.log_sent_bytes(bytes)
-        if bytes == len(self.buffer[0]):
-            self.buffer.pop(0)
-        else:
-            self.buffer[0] = self.buffer[0][bytes:]
-
     def handle_close(self):
         self.close()
         if not options.quiet:
             print >> sys.stderr, "client %s:%d disconnected" % self.addr
 
 
-class ServerChannel(asyncore.dispatcher):
+class ServerChannel(ThrottleSender):
 
     def __init__(self, client, header):
-        asyncore.dispatcher.__init__(self)
-        self.buffer = []
+        ThrottleSender.__init__(self,
+            monitor.sendable, monitor.log_sent_bytes)
         self.client = client
         self.addr = header.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -281,16 +293,6 @@ class ServerChannel(asyncore.dispatcher):
 
     def send_line(self, line):
         self.buffer.append(line + '\r\n')
-
-    def writable(self):
-        return len(self.buffer)
-
-    def handle_write(self):
-        bytes = self.send(self.buffer[0])
-        if bytes == len(self.buffer[0]):
-            self.buffer.pop(0)
-        else:
-            self.buffer[0] = self.buffer[0][bytes:]
 
     def handle_read(self):
         data = self.recv(8192)
@@ -355,8 +357,8 @@ if __name__ == '__main__':
                       help="dump content received from server")
     options, args = parser.parse_args()
     monitor = BandwidthMonitor(
-        int(options.upload * KILO) / 8,
-        int(options.download * KILO) / 8)
+        int(options.download * KILO) / 8,
+        int(options.upload * KILO) / 8)
     proxy = ProxyServer()
     try:
         asyncore.loop(timeout=0.1)
