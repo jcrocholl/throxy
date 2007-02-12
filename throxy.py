@@ -119,6 +119,7 @@ class Header:
             return
         if self.host.count(':'):
             self.host_name, self.host_port = self.host.split(':')
+            self.host_port = int(self.host_port)
         else:
             self.host_name = self.host
             self.host_port = 80
