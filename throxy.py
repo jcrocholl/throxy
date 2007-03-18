@@ -64,6 +64,15 @@ KILO = 1000 # decimal or binary kilo
 request_match = re.compile(r'^([A-Z]+) (\S+) (HTTP/\S+)$').match
 
 
+def debug(message, newline=True):
+    """Print message to stderr and clear the rest of the line."""
+    if options.quiet:
+        return
+    if newline:
+        message = message.ljust(79) + '\n'
+    sys.stderr.write(message)
+
+
 class Header:
     """HTTP (request or reply) header parser."""
 
@@ -199,28 +208,14 @@ class Header:
         return result
 
 
-class ThrottleSender(asyncore.dispatcher):
-    """Data connection with send buffer and bandwidth limit."""
+class Throttle:
+    """Bandwidth limit tracker."""
 
-    def __init__(self, kbps, channel=None, transmit_log=None):
-        if channel is None:
-            asyncore.dispatcher.__init__(self)
-        else:
-            asyncore.dispatcher.__init__(self, channel)
-        if transmit_log is None:
-            # In this case, the bandwidth limit will be enforced
-            # for each sender instance. Multiple sender instances
-            # can each use what is specified as the kbps argument.
-            self.transmit_log = []
-        else:
-            # Use this optional argument for sharing the bandwidth
-            # limit among multiple senders.
-            self.transmit_log = transmit_log
-        self.interval = 1.0
+    def __init__(self, kbps, interval=1.0):
         self.bytes_per_second = int(kbps * KILO) / 8
+        self.interval = interval
+        self.transmit_log = []
         self.fragment_size = min(512, self.bytes_per_second / 4)
-        self.buffer = []
-        self.should_close = False
 
     def log_sent_bytes(self, bytes):
         """Add timestamp and byte count to transmit log."""
@@ -235,8 +230,6 @@ class ThrottleSender(asyncore.dispatcher):
         """Compute recent bandwidth usage, in bytes per second."""
         now = time.time()
         self.trim_log(now - self.interval)
-        if len(self.transmit_log) == 0:
-            return 0
         weighted = 0.0
         for timestamp, bytes in self.transmit_log:
             age = now - timestamp # Event's age in seconds
@@ -252,13 +245,8 @@ class ThrottleSender(asyncore.dispatcher):
 
     def real_bytes(self):
         """Compute recent bandwidth usage, in bytes per second."""
-        now = time.time()
-        self.trim_log(now - self.interval)
-        if len(self.transmit_log) == 0:
-            return 0
-        real = 0
-        for timestamp, bytes in self.transmit_log:
-            real += bytes
+        self.trim_log(time.time() - self.interval)
+        real = sum([bytes for timestamp, bytes in self.transmit_log])
         return int(real / self.interval)
 
     def real_kbps(self):
@@ -269,18 +257,31 @@ class ThrottleSender(asyncore.dispatcher):
         """How many bytes can we send without exceeding bandwidth?"""
         return max(0, self.bytes_per_second - self.weighted_bytes())
 
+
+class ThrottleSender(asyncore.dispatcher):
+    """Data connection with send buffer and bandwidth limit."""
+
+    def __init__(self, throttle, channel=None):
+        self.throttle = throttle
+        if channel is None:
+            asyncore.dispatcher.__init__(self)
+        else:
+            asyncore.dispatcher.__init__(self, channel)
+        self.buffer = []
+        self.should_close = False
+
     def writable(self):
         """Check if this channel is ready to write some data."""
         return (len(self.buffer) and
-                self.sendable() / 2 > self.fragment_size)
+                self.throttle.sendable() / 2 > self.throttle.fragment_size)
 
     def handle_write(self):
         """Write some data to the socket."""
-        max_bytes = self.sendable() / 2
-        if max_bytes < self.fragment_size:
+        max_bytes = self.throttle.sendable() / 2
+        if max_bytes < self.throttle.fragment_size:
             return
         bytes = self.send(self.buffer[0][:max_bytes])
-        self.log_sent_bytes(bytes)
+        self.throttle.log_sent_bytes(bytes)
         if bytes == len(self.buffer[0]):
             self.buffer.pop(0)
         else:
@@ -296,9 +297,9 @@ class ThrottleSender(asyncore.dispatcher):
 class ClientChannel(ThrottleSender):
     """A client connection."""
 
-    def __init__(self, channel, addr, download_log, upload_log):
-        ThrottleSender.__init__(self, options.download, channel, download_log)
-        self.upload_log = upload_log
+    def __init__(self, channel, addr, download_throttle, upload_throttle):
+        ThrottleSender.__init__(self, download_throttle, channel)
+        self.upload_throttle = upload_throttle
         self.addr = addr
         self.header = Header()
         self.content_length = 0
@@ -324,9 +325,7 @@ class ClientChannel(ThrottleSender):
             if not len(data):
                 break
             if self.header.complete and self.content_length == 0:
-                if not options.quiet:
-                    print >> sys.stderr, \
-                          "client %s:%d sends a new request" % self.addr
+                debug("client %s:%d sends a new request" % self.addr)
                 self.header = Header()
                 self.server = None
             data = self.header.append(data)
@@ -336,26 +335,24 @@ class ClientChannel(ThrottleSender):
                 self.header.extract_host()
                 if options.dump_send_headers:
                     self.header.dump(self.addr, self.header.host_addr)
-                self.server = ServerChannel(self, self.header,
-                                            self.upload_log)
+                self.server = ServerChannel(
+                    self, self.header, self.upload_throttle)
 
     def handle_connect(self):
         """Print connect message to stderr."""
-        if not options.quiet:
-            print >> sys.stderr, "client %s:%d connected" % self.addr
+        debug("client %s:%d connected" % self.addr)
 
     def handle_close(self):
         """Print disconnect message to stderr."""
         self.close()
-        if not options.quiet:
-            print >> sys.stderr, "client %s:%d disconnected" % self.addr
+        debug("client %s:%d disconnected" % self.addr)
 
 
 class ServerChannel(ThrottleSender):
     """Connection to HTTP server."""
 
-    def __init__(self, client, header, upload_log):
-        ThrottleSender.__init__(self, options.upload, upload_log)
+    def __init__(self, client, header, upload_throttle):
+        ThrottleSender.__init__(self, upload_throttle)
         self.client = client
         self.addr = header.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -414,14 +411,12 @@ class ServerChannel(ThrottleSender):
 
     def handle_connect(self):
         """Print connect message to stderr."""
-        if not options.quiet:
-            print >> sys.stderr, "server %s:%d connected" % self.addr
+        debug("server %s:%d connected" % self.addr)
 
     def handle_close(self):
         """Print disconnect message to stderr."""
         self.close()
-        if not options.quiet:
-            print >> sys.stderr, "server %s:%d disconnected" % self.addr
+        debug("server %s:%d disconnected" % self.addr)
         if self.header.extract('Connection').lower() == 'close':
             self.client.should_close = True
             self.client.check_close()
@@ -432,31 +427,30 @@ class ProxyServer(asyncore.dispatcher):
 
     def __init__(self):
         asyncore.dispatcher.__init__(self)
-        self.download_log = []
-        self.upload_log = []
+        self.download_throttle = Throttle(options.download)
+        self.upload_throttle = Throttle(options.upload)
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.addr = (options.interface, options.port)
         self.bind(self.addr)
         self.listen(5)
-        if not options.quiet:
-            print >> sys.stderr, "listening on %s:%d" % self.addr
+        debug("listening on %s:%d" % self.addr)
 
     def readable(self):
-        #print chr(13) + 'bandwidth use: %.1f up, %.1f down' % (
-        #    sum([x[1] for x in self.upload_log]),
-        #    sum([x[1] for x in self.download_log]),
-        #    ),
+        debug('%8.1f kbps up %8.1f kbps down\r' % (
+            self.upload_throttle.real_kbps(),
+            self.download_throttle.real_kbps(),
+            ), newline=False)
         return True
 
     def handle_accept(self):
         """Accept a new connection from a client."""
         channel, addr = self.accept()
         if addr[0] == '127.0.0.1' or options.allow_remote:
-            ClientChannel(channel, addr, self.download_log, self.upload_log)
+            ClientChannel(channel, addr,
+                          self.download_throttle, self.upload_throttle)
         else:
             channel.close()
-            if not options.quiet:
-                print >> sys.stderr, "remote client %s:%d not allowed" % addr
+            debug("remote client %s:%d not allowed" % addr)
 
 
 if __name__ == '__main__':
