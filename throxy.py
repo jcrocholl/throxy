@@ -202,15 +202,23 @@ class Header:
 class ThrottleSender(asyncore.dispatcher):
     """Data connection with send buffer and bandwidth limit."""
 
-    def __init__(self, kbps, channel=None):
+    def __init__(self, kbps, channel=None, transmit_log=None):
         if channel is None:
             asyncore.dispatcher.__init__(self)
         else:
             asyncore.dispatcher.__init__(self, channel)
+        if transmit_log is None:
+            # In this case, the bandwidth limit will be enforced
+            # for each sender instance. Multiple sender instances
+            # can each use what is specified as the kbps argument.
+            self.transmit_log = []
+        else:
+            # Use this optional argument for sharing the bandwidth
+            # limit among multiple senders.
+            self.transmit_log = transmit_log
         self.interval = 1.0
         self.bytes_per_second = int(kbps * KILO) / 8
         self.fragment_size = min(512, self.bytes_per_second / 4)
-        self.transmit_log = []
         self.buffer = []
         self.should_close = False
 
@@ -273,8 +281,9 @@ class ThrottleSender(asyncore.dispatcher):
 class ClientChannel(ThrottleSender):
     """A client connection."""
 
-    def __init__(self, channel, addr):
-        ThrottleSender.__init__(self, options.download, channel)
+    def __init__(self, channel, addr, download_log, upload_log):
+        ThrottleSender.__init__(self, options.download, channel, download_log)
+        self.upload_log = upload_log
         self.addr = addr
         self.header = Header()
         self.content_length = 0
@@ -312,7 +321,8 @@ class ClientChannel(ThrottleSender):
                 self.header.extract_host()
                 if options.dump_send_headers:
                     self.header.dump(self.addr, self.header.host_addr)
-                self.server = ServerChannel(self, self.header)
+                self.server = ServerChannel(self, self.header,
+                                            self.upload_log)
 
     def handle_connect(self):
         """Print connect message to stderr."""
@@ -329,8 +339,8 @@ class ClientChannel(ThrottleSender):
 class ServerChannel(ThrottleSender):
     """Connection to HTTP server."""
 
-    def __init__(self, client, header):
-        ThrottleSender.__init__(self, options.upload)
+    def __init__(self, client, header, upload_log):
+        ThrottleSender.__init__(self, options.upload, upload_log)
         self.client = client
         self.addr = header.host_addr
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -407,6 +417,8 @@ class ProxyServer(asyncore.dispatcher):
 
     def __init__(self):
         asyncore.dispatcher.__init__(self)
+        self.download_log = []
+        self.upload_log = []
         self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
         self.addr = (options.interface, options.port)
         self.bind(self.addr)
@@ -418,7 +430,7 @@ class ProxyServer(asyncore.dispatcher):
         """Accept a new connection from a client."""
         channel, addr = self.accept()
         if addr[0] == '127.0.0.1' or options.allow_remote:
-            ClientChannel(channel, addr)
+            ClientChannel(channel, addr, self.download_log, self.upload_log)
         else:
             channel.close()
             if not options.quiet:
