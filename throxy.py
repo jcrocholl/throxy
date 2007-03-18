@@ -250,6 +250,21 @@ class ThrottleSender(asyncore.dispatcher):
         """Compute recent bandwidth usage, in kbps."""
         return 8 * self.weighted_bytes() / float(KILO)
 
+    def real_bytes(self):
+        """Compute recent bandwidth usage, in bytes per second."""
+        now = time.time()
+        self.trim_log(now - self.interval)
+        if len(self.transmit_log) == 0:
+            return 0
+        real = 0
+        for timestamp, bytes in self.transmit_log:
+            real += bytes
+        return int(real / self.interval)
+
+    def real_kbps(self):
+        """Compute recent bandwidth usage, in kbps."""
+        return 8 * self.real_bytes() / float(KILO)
+
     def sendable(self):
         """How many bytes can we send without exceeding bandwidth?"""
         return max(0, self.bytes_per_second - self.weighted_bytes())
@@ -425,6 +440,13 @@ class ProxyServer(asyncore.dispatcher):
         self.listen(5)
         if not options.quiet:
             print >> sys.stderr, "listening on %s:%d" % self.addr
+
+    def readable(self):
+        #print chr(13) + 'bandwidth use: %.1f up, %.1f down' % (
+        #    sum([x[1] for x in self.upload_log]),
+        #    sum([x[1] for x in self.download_log]),
+        #    ),
+        return True
 
     def handle_accept(self):
         """Accept a new connection from a client."""
