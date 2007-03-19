@@ -235,11 +235,6 @@ class Throttle:
             self.real_throughput += bytes
         self.last_updated = now
 
-    def log_sent_bytes(self, bytes):
-        """Add timestamp and byte count to transmit log."""
-        self.transmit_log.append((time.time(), bytes))
-        self.update_throughput(time.time())
-
     def trim_log(self):
         """Forget transmit log entries that are too old."""
         now = time.time()
@@ -250,6 +245,11 @@ class Throttle:
             popped += 1
         if popped or now - self.last_updated > 0.1:
             self.update_throughput(now)
+
+    def log_sent_bytes(self, bytes):
+        """Add timestamp and byte count to transmit log."""
+        self.transmit_log.append((time.time(), bytes))
+        self.update_throughput(time.time())
 
     def sendable(self):
         """How many bytes can we send without exceeding bandwidth?"""
