@@ -216,46 +216,54 @@ class Throttle:
         self.interval = interval
         self.transmit_log = []
         self.fragment_size = min(512, self.bytes_per_second / 4)
+        self.weighted_throughput = 0.0
+        self.real_throughput = 0
+
+    def update_throughput(self, now):
+        """Update weighted and real throughput."""
+        self.weighted_throughput = 0.0
+        self.real_throughput = 0
+        for timestamp, bytes in self.transmit_log:
+            # Event's age in seconds
+            age = now - timestamp
+            assert 0 <= age <= self.interval
+            # Newer entries count more
+            weight = 2.0 * (self.interval - age) / self.interval
+            assert 0.0 <= weight <= 2.0
+            self.weighted_throughput += bytes * weight
+            self.real_throughput += bytes
 
     def log_sent_bytes(self, bytes):
         """Add timestamp and byte count to transmit log."""
         self.transmit_log.append((time.time(), bytes))
+        self.update_throughput(time.time())
 
-    def trim_log(self, horizon):
+    def trim_log(self):
         """Forget transmit log entries that are too old."""
+        now = time.time()
+        horizon = now - self.interval
+        popped = 0
         while len(self.transmit_log) and self.transmit_log[0][0] <= horizon:
             self.transmit_log.pop(0)
-
-    def weighted_bytes(self):
-        """Compute recent bandwidth usage, in bytes per second."""
-        now = time.time()
-        self.trim_log(now - self.interval)
-        weighted = 0.0
-        for timestamp, bytes in self.transmit_log:
-            age = now - timestamp # Event's age in seconds
-            assert 0 <= age <= self.interval
-            weight = 2.0 * (self.interval - age) / self.interval
-            assert 0.0 <= weight <= 2.0
-            weighted += weight * bytes # Newer entries count more
-        return int(weighted / self.interval)
-
-    def weighted_kbps(self):
-        """Compute recent bandwidth usage, in kbps."""
-        return 8 * self.weighted_bytes() / float(KILO)
-
-    def real_bytes(self):
-        """Compute recent bandwidth usage, in bytes per second."""
-        self.trim_log(time.time() - self.interval)
-        real = sum([bytes for timestamp, bytes in self.transmit_log])
-        return int(real / self.interval)
-
-    def real_kbps(self):
-        """Compute recent bandwidth usage, in kbps."""
-        return 8 * self.real_bytes() / float(KILO)
+            popped += 1
+        if popped:
+            self.update_throughput(now)
 
     def sendable(self):
         """How many bytes can we send without exceeding bandwidth?"""
-        return max(0, self.bytes_per_second - self.weighted_bytes())
+        self.trim_log()
+        weighted_bytes = int(self.weighted_throughput / self.interval)
+        return max(0, self.bytes_per_second - weighted_bytes)
+
+    def weighted_kbps(self):
+        """Compute recent bandwidth usage, in kbps."""
+        self.trim_log()
+        return 8 * self.weighted_throughput / float(KILO) / self.interval
+
+    def real_kbps(self):
+        """Compute recent bandwidth usage, in kbps."""
+        self.trim_log()
+        return 8 * self.real_throughput / float(KILO) / self.interval
 
 
 class ThrottleSender(asyncore.dispatcher):
