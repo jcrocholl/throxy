@@ -214,10 +214,11 @@ class Throttle:
     def __init__(self, kbps, interval=1.0):
         self.bytes_per_second = int(kbps * KILO) / 8
         self.interval = interval
-        self.transmit_log = []
         self.fragment_size = min(512, self.bytes_per_second / 4)
+        self.transmit_log = []
         self.weighted_throughput = 0.0
         self.real_throughput = 0
+        self.last_updated = time.time()
 
     def update_throughput(self, now):
         """Update weighted and real throughput."""
@@ -226,12 +227,13 @@ class Throttle:
         for timestamp, bytes in self.transmit_log:
             # Event's age in seconds
             age = now - timestamp
-            assert 0 <= age <= self.interval
+            if age > self.interval:
+                continue
             # Newer entries count more
             weight = 2.0 * (self.interval - age) / self.interval
-            assert 0.0 <= weight <= 2.0
             self.weighted_throughput += bytes * weight
             self.real_throughput += bytes
+        self.last_updated = now
 
     def log_sent_bytes(self, bytes):
         """Add timestamp and byte count to transmit log."""
@@ -246,7 +248,7 @@ class Throttle:
         while len(self.transmit_log) and self.transmit_log[0][0] <= horizon:
             self.transmit_log.pop(0)
             popped += 1
-        if popped:
+        if popped or now - self.last_updated > 0.1:
             self.update_throughput(now)
 
     def sendable(self):
