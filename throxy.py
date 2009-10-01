@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 # throxy.py - HTTP proxy to simulate dial-up access
-# Copyright (c) 2007 Johann C. Rocholl <johann@browsershots.org>
+# Copyright (c) 2007 Johann C. Rocholl <johann@rocholl.net>
 #
 # Permission is hereby granted, free of charge, to any person
 # obtaining a copy of this software and associated documentation files
